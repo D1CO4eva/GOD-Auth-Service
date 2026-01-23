@@ -1,0 +1,16 @@
+{
+  "name": "god-auth-service",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Secure backend proxy for booking form to Google Apps Script.",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node server.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  }
+}
