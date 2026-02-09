@@ -6,6 +6,35 @@ import { fileURLToPath } from 'url';
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 
+// Optional CORS for browser-based frontends hosted on a different origin.
+// Set `CORS_ORIGINS` to a comma-separated list of allowed origins, or `*` to allow all.
+// Example: CORS_ORIGINS=https://godivinity.org,https://www.godivinity.org
+const corsOrigins = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+const corsAllowAll = corsOrigins.includes('*');
+
+if (corsOrigins.length > 0) {
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+
+    if (corsAllowAll) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    } else if (origin && corsOrigins.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      // Avoid cache poisoning when allowing a subset of origins.
+      res.setHeader('Vary', 'Origin');
+    }
+
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    next();
+  });
+}
+
 const REQUIRED_ENV_KEYS = [
   'APPS_SCRIPT_URL',
   'APPS_SCRIPT_GET_TOKEN',
