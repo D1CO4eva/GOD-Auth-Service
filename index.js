@@ -6,34 +6,50 @@ import { fileURLToPath } from 'url';
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 
-// Optional CORS for browser-based frontends hosted on a different origin.
-// Set `CORS_ORIGINS` to a comma-separated list of allowed origins, or `*` to allow all.
-// Example: CORS_ORIGINS=https://godivinity.org,https://www.godivinity.org
+// CORS for browser-based frontends hosted on another origin.
+// Set `CORS_ORIGINS` to a comma-separated list, or `*` to allow all origins.
+// If unset, default to the production website origins.
+const DEFAULT_CORS_ORIGINS = [
+  'https://atlanta.godivinity.org',
+  'https://www.atlanta.godivinity.org'
+];
+
 const corsOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
-const corsAllowAll = corsOrigins.includes('*');
+const effectiveCorsOrigins = corsOrigins.length > 0 ? corsOrigins : DEFAULT_CORS_ORIGINS;
+const corsAllowAll = effectiveCorsOrigins.includes('*');
 
-if (corsOrigins.length > 0) {
-  app.use((req, res, next) => {
-    const origin = req.headers.origin;
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const isAllowedOrigin =
+    !origin || corsAllowAll || effectiveCorsOrigins.includes(origin);
 
+  if (req.method === 'OPTIONS' && !isAllowedOrigin) {
+    return res.sendStatus(403);
+  }
+
+  if (origin && isAllowedOrigin) {
     if (corsAllowAll) {
       res.setHeader('Access-Control-Allow-Origin', '*');
-    } else if (origin && corsOrigins.includes(origin)) {
+    } else {
       res.setHeader('Access-Control-Allow-Origin', origin);
       // Avoid cache poisoning when allowing a subset of origins.
       res.setHeader('Vary', 'Origin');
     }
+  }
 
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    req.headers['access-control-request-headers'] || 'Content-Type, Authorization'
+  );
+  res.setHeader('Access-Control-Max-Age', '600');
 
-    if (req.method === 'OPTIONS') return res.sendStatus(204);
-    next();
-  });
-}
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 
 const REQUIRED_ENV_KEYS = [
   'APPS_SCRIPT_URL',

@@ -29,7 +29,10 @@ Optional:
 - `PORT` (Cloud Run sets this automatically; defaults to `8080`)
 - `CORS_ORIGINS`  
   Comma-separated list of allowed browser origins, or `*`.
-  Example: `https://godivinity.org,https://www.godivinity.org`
+  If omitted, defaults to:
+  - `https://atlanta.godivinity.org`
+  - `https://www.atlanta.godivinity.org`
+  Example: `https://atlanta.godivinity.org,https://www.atlanta.godivinity.org`
 
 At startup the server logs a safe preview of the configured secrets (first 4 chars and last 4 chars).
 
@@ -64,8 +67,13 @@ Example:
 ```powershell
 gcloud run services update god-auth-service `
   --region us-central1 `
-  --set-env-vars CORS_ORIGINS=https://godivinity.org,https://www.godivinity.org
+  --set-env-vars CORS_ORIGINS=https://atlanta.godivinity.org,https://www.atlanta.godivinity.org
 ```
+
+Notes:
+
+- This service handles browser CORS preflight (`OPTIONS`) at the API layer.
+- Using browser `mode: "no-cors"` is not recommended because responses are opaque and you cannot reliably read returned data.
 
 ## Deploy To Cloud Run (Container)
 
@@ -87,4 +95,3 @@ gcloud run deploy $SERVICE `
 ```
 
 If your Cloud Run service should not be public, remove `--allow-unauthenticated` and call it with an identity token instead.
-
