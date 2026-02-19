@@ -133,6 +133,190 @@ const writeCacheRecord = async (record) => {
   await fsPromises.rename(tmpPath, cacheFilePath);
 };
 
+const parseJsonSafely = (value) => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
+
+const normalizeDateString = (value) => {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  if (!text) return null;
+
+  const isoMatch = text.match(/\b\d{4}-\d{2}-\d{2}\b/);
+  if (isoMatch) return isoMatch[0];
+
+  const usMatch = text.match(/\b\d{1,2}\/\d{1,2}\/\d{4}\b/);
+  if (usMatch) {
+    const [monthStr, dayStr, yearStr] = usMatch[0].split('/');
+    const year = Number(yearStr);
+    const month = Number(monthStr);
+    const day = Number(dayStr);
+    if (!Number.isNaN(year) && !Number.isNaN(month) && !Number.isNaN(day)) {
+      return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+  }
+
+  return null;
+};
+
+const normalizeText = (value) => {
+  if (value === null || value === undefined) return '';
+  return String(value).trim();
+};
+
+const extractBookingsFromRow = (row, dateCol, programCol, timeCol) => {
+  if (Array.isArray(row)) {
+    const rawDate = dateCol >= 0 ? row[dateCol] : row[0];
+    const rawType = programCol >= 0 ? row[programCol] : '';
+    const rawTime = timeCol >= 0 ? row[timeCol] : '';
+    const date = normalizeDateString(rawDate);
+    if (!date) return [];
+    return [{ date, type: normalizeText(rawType), time: normalizeText(rawTime) }];
+  }
+
+  if (row && typeof row === 'object') {
+    const obj = row;
+    const rawDate =
+      obj.date ||
+      obj.Date ||
+      obj.programDate ||
+      obj.program_date ||
+      obj['Program Date'] ||
+      obj['Date of Program'] ||
+      obj['Date of Program (YYYY-MM-DD)'];
+    const rawType =
+      obj.type ||
+      obj.Type ||
+      obj.programType ||
+      obj.program_type ||
+      obj['Type of Program'] ||
+      obj['Program Type'] ||
+      obj.program ||
+      obj.Program;
+    const rawTime =
+      obj.time ||
+      obj.Time ||
+      obj.programTime ||
+      obj.program_time ||
+      obj['Time Slot'] ||
+      obj['Time'];
+    const date = normalizeDateString(rawDate);
+    if (!date) return [];
+    return [{ date, type: normalizeText(rawType), time: normalizeText(rawTime) }];
+  }
+
+  if (typeof row === 'string') {
+    const date = normalizeDateString(row);
+    return date ? [{ date, type: '', time: '' }] : [];
+  }
+
+  return [];
+};
+
+const extractBookings = (data) => {
+  if (!data) return [];
+
+  const rows = [];
+  if (Array.isArray(data)) {
+    rows.push(...data);
+  } else if (typeof data === 'object') {
+    const obj = data;
+    const container =
+      (Array.isArray(obj.data) && obj.data) ||
+      (Array.isArray(obj.bookings) && obj.bookings) ||
+      (Array.isArray(obj.rows) && obj.rows);
+    if (container) rows.push(...container);
+  }
+
+  if (!rows.length) return [];
+
+  const headerRow = Array.isArray(rows[0]) ? rows[0] : null;
+  let startIndex = 0;
+  let dateCol = -1;
+  let programCol = -1;
+  let timeCol = -1;
+
+  if (headerRow) {
+    const headerStrings = headerRow.map((cell) => String(cell).toLowerCase());
+    if (headerStrings.some((cell) => cell.includes('date'))) {
+      startIndex = 1;
+    }
+    dateCol = headerStrings.findIndex((cell) => cell.includes('date'));
+    programCol = headerStrings.findIndex(
+      (cell) => cell.includes('type of program') || cell.includes('program type') || cell.includes('program')
+    );
+    timeCol = headerStrings.findIndex((cell) => cell.includes('time'));
+  }
+
+  const bookings = [];
+  for (let i = startIndex; i < rows.length; i += 1) {
+    bookings.push(...extractBookingsFromRow(rows[i], dateCol, programCol, timeCol));
+  }
+
+  return bookings;
+};
+
+const dedupeAndSortBookings = (bookings) => {
+  const unique = Array.from(
+    new Map(
+      bookings.map((item) => [
+        `${item.date}|${normalizeText(item.type).toLowerCase()}|${normalizeText(item.time).toLowerCase()}`,
+        {
+          date: item.date,
+          type: normalizeText(item.type),
+          time: normalizeText(item.time)
+        }
+      ])
+    ).values()
+  );
+
+  unique.sort((left, right) => {
+    if (left.date !== right.date) return left.date.localeCompare(right.date);
+    if (left.type !== right.type) return left.type.localeCompare(right.type);
+    return left.time.localeCompare(right.time);
+  });
+
+  return unique;
+};
+
+const toCanonicalPayload = (bookings) => JSON.stringify({ bookings: dedupeAndSortBookings(bookings) });
+
+const appendBookingToCache = async (postBody) => {
+  const rawDate =
+    postBody.Date ||
+    postBody.date ||
+    postBody.programDate ||
+    postBody.program_date ||
+    postBody['Program Date'];
+  const rawType =
+    postBody['Type of Program'] ||
+    postBody.typeOfProgram ||
+    postBody.type ||
+    postBody['Program Type'] ||
+    postBody.program;
+  const rawTime = postBody.Time || postBody.time || postBody['Time Slot'] || postBody.programTime;
+
+  const date = normalizeDateString(rawDate);
+  if (!date) return;
+
+  const cacheRecord = await readCacheRecord();
+  const cachedData = cacheRecord.payload ? parseJsonSafely(cacheRecord.payload) : null;
+  const existingBookings = extractBookings(cachedData);
+  const nextBookings = dedupeAndSortBookings([
+    ...existingBookings,
+    { date, type: normalizeText(rawType), time: normalizeText(rawTime) }
+  ]);
+
+  await writeCacheRecord({
+    updatedAt: new Date().toISOString(),
+    payload: toCanonicalPayload(nextBookings)
+  });
+};
+
 const fetchBookingsFromAppsScript = async () => {
   const readUrl = new URL(process.env.APPS_SCRIPT_URL);
   readUrl.searchParams.set('token', process.env.APPS_SCRIPT_GET_TOKEN);
@@ -156,12 +340,21 @@ const refreshCacheFromAppsScript = async () => {
     return result;
   }
 
+  const parsed = parseJsonSafely(result.text);
+  const canonicalPayload =
+    parsed === null
+      ? result.text
+      : toCanonicalPayload(extractBookings(parsed));
+
   await writeCacheRecord({
     updatedAt: new Date().toISOString(),
-    payload: result.text
+    payload: canonicalPayload
   });
 
-  return result;
+  return {
+    ...result,
+    text: canonicalPayload
+  };
 };
 
 app.get('/api/bookings', async (_req, res) => {
@@ -218,9 +411,9 @@ app.post('/api/bookings', async (req, res) => {
     const text = await response.text();
     if (response.ok) {
       try {
-        await refreshCacheFromAppsScript();
+        await appendBookingToCache(req.body || {});
       } catch (cacheError) {
-        console.error('Cache refresh after POST failed:', cacheError);
+        console.error('Cache append after POST failed:', cacheError);
       }
     }
     res.status(response.ok ? 200 : response.status).type('application/json').send(text);

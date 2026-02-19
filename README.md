@@ -13,7 +13,7 @@ It proxies browser/app requests to a Google Apps Script web app that reads/write
   If cache is empty, it reads from Apps Script once and seeds `cache.json`.
 - `POST /api/bookings`  
   Forwards JSON to your Apps Script `APPS_SCRIPT_URL` with `token: APPS_SCRIPT_POST_TOKEN` merged into the body.  
-  On successful write, refreshes `cache.json` from Apps Script.
+  On successful write, appends/updates `cache.json` directly from the POST payload.
 
 If a frontend build exists at `dist/index.html`, this service also serves static files from `dist/` and routes all other paths to `dist/index.html`.
 
@@ -52,7 +52,7 @@ This service stores booking data in `cache.json` in the service root:
 Notes:
 
 - `GET /api/bookings` serves from this file for fast responses.
-- The cache is refreshed after successful `POST /api/bookings`.
+- After successful `POST /api/bookings`, cache is updated directly from submitted payload (no full-sheet re-fetch).
 - On startup, the service creates `cache.json` if missing and warms it once when possible.
 
 ## Local Development
