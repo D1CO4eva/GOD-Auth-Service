@@ -13,6 +13,15 @@ const emptyCacheRecord = {
   updatedAt: null,
   payload: null
 };
+const CACHE_BACKGROUND_REFRESH_INTERVAL_SECONDS = Number(
+  process.env.CACHE_BACKGROUND_REFRESH_INTERVAL_SECONDS || 300
+);
+const backgroundRefreshIntervalMs =
+  Number.isFinite(CACHE_BACKGROUND_REFRESH_INTERVAL_SECONDS) &&
+  CACHE_BACKGROUND_REFRESH_INTERVAL_SECONDS > 0
+    ? Math.floor(CACHE_BACKGROUND_REFRESH_INTERVAL_SECONDS * 1000)
+    : 300000;
+let refreshInFlight = null;
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -102,6 +111,13 @@ const normalizeCacheRecord = (value) => {
     updatedAt,
     payload
   };
+};
+
+const isCacheStale = (cacheRecord) => {
+  if (!cacheRecord.updatedAt) return true;
+  const updatedAtMs = Date.parse(cacheRecord.updatedAt);
+  if (!Number.isFinite(updatedAtMs)) return true;
+  return Date.now() - updatedAtMs >= backgroundRefreshIntervalMs;
 };
 
 const ensureCacheFile = async () => {
@@ -357,6 +373,31 @@ const refreshCacheFromAppsScript = async () => {
   };
 };
 
+const refreshCacheFromAppsScriptSafely = async (reason) => {
+  if (refreshInFlight) {
+    return refreshInFlight;
+  }
+
+  refreshInFlight = (async () => {
+    try {
+      const refreshResult = await refreshCacheFromAppsScript();
+      if (!refreshResult.ok) {
+        console.error(`Cache refresh failed (${reason}):`, refreshResult.status);
+      } else {
+        console.log(`Cache refreshed (${reason}).`);
+      }
+      return refreshResult;
+    } catch (error) {
+      console.error(`Cache refresh error (${reason}):`, error);
+      return null;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+
+  return refreshInFlight;
+};
+
 app.get('/api/bookings', async (_req, res) => {
   if (!hasAllRequiredEnv()) {
     return res
@@ -367,20 +408,23 @@ app.get('/api/bookings', async (_req, res) => {
   try {
     const cacheRecord = await readCacheRecord();
     if (cacheRecord.payload) {
+      if (isCacheStale(cacheRecord)) {
+        void refreshCacheFromAppsScriptSafely('stale-get');
+      }
       res.setHeader('X-Bookings-Source', 'cache-file');
       return res.status(200).type('application/json').send(cacheRecord.payload);
     }
 
-    const refreshResult = await refreshCacheFromAppsScript();
-    if (refreshResult.ok) {
+    const refreshResult = await refreshCacheFromAppsScriptSafely('cache-empty-get');
+    if (refreshResult?.ok) {
       res.setHeader('X-Bookings-Source', 'apps-script');
       return res.status(200).type('application/json').send(refreshResult.text);
     }
 
     res
-      .status(refreshResult.status)
+      .status(refreshResult?.status || 500)
       .type('application/json')
-      .send(refreshResult.text || JSON.stringify({ error: 'Failed to load bookings.' }));
+      .send(refreshResult?.text || JSON.stringify({ error: 'Failed to load bookings.' }));
   } catch (error) {
     console.error('Read error:', error);
     res.status(500).json({ error: 'Failed to load bookings.' });
@@ -412,6 +456,7 @@ app.post('/api/bookings', async (req, res) => {
     if (response.ok) {
       try {
         await appendBookingToCache(req.body || {});
+        void refreshCacheFromAppsScriptSafely('post-reconcile');
       } catch (cacheError) {
         console.error('Cache append after POST failed:', cacheError);
       }
@@ -440,15 +485,10 @@ logSecretPreviews();
 ensureCacheFile()
   .then(async () => {
     if (!hasAllRequiredEnv()) return;
-    const cacheRecord = await readCacheRecord();
-    if (!cacheRecord.payload) {
-      try {
-        await refreshCacheFromAppsScript();
-        console.log('Cache warmed from Apps Script.');
-      } catch (error) {
-        console.error('Initial cache warm failed:', error);
-      }
-    }
+    void refreshCacheFromAppsScriptSafely('startup');
+    setInterval(() => {
+      void refreshCacheFromAppsScriptSafely('interval');
+    }, backgroundRefreshIntervalMs);
   })
   .catch((error) => {
     console.error('Cache initialization failed:', error);

@@ -35,6 +35,9 @@ Optional:
   - `https://atlanta.godivinity.org`
   - `https://www.atlanta.godivinity.org`
   Example: `https://atlanta.godivinity.org,https://www.atlanta.godivinity.org`
+- `CACHE_BACKGROUND_REFRESH_INTERVAL_SECONDS`  
+  Interval for background full refresh from Apps Script to reconcile manual sheet edits/deletes.  
+  Default: `300` seconds.
 
 At startup the server logs a safe preview of the configured secrets (first 4 chars and last 4 chars).
 
@@ -53,7 +56,7 @@ Notes:
 
 - `GET /api/bookings` serves from this file for fast responses.
 - After successful `POST /api/bookings`, cache is updated directly from submitted payload (no full-sheet re-fetch).
-- On startup, the service creates `cache.json` if missing and warms it once when possible.
+- Cache is also reconciled from Apps Script in the background (startup + interval) so manual Google Sheet edits are reflected.
 
 ## Local Development
 
