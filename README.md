@@ -9,9 +9,11 @@ It proxies browser/app requests to a Google Apps Script web app that reads/write
 - `GET /`  
   Returns `{"status":"ok"}` if no frontend build is present.
 - `GET /api/bookings`  
-  Forwards to your Apps Script `APPS_SCRIPT_URL` as a GET with `?token=APPS_SCRIPT_GET_TOKEN`.
+  Returns cached bookings from local `cache.json`.  
+  If cache is empty, it reads from Apps Script once and seeds `cache.json`.
 - `POST /api/bookings`  
-  Forwards JSON to your Apps Script `APPS_SCRIPT_URL` with `token: APPS_SCRIPT_POST_TOKEN` merged into the body.
+  Forwards JSON to your Apps Script `APPS_SCRIPT_URL` with `token: APPS_SCRIPT_POST_TOKEN` merged into the body.  
+  On successful write, refreshes `cache.json` from Apps Script.
 
 If a frontend build exists at `dist/index.html`, this service also serves static files from `dist/` and routes all other paths to `dist/index.html`.
 
@@ -35,6 +37,23 @@ Optional:
   Example: `https://atlanta.godivinity.org,https://www.atlanta.godivinity.org`
 
 At startup the server logs a safe preview of the configured secrets (first 4 chars and last 4 chars).
+
+## Booking Cache File
+
+This service stores booking data in `cache.json` in the service root:
+
+```json
+{
+  "updatedAt": "2026-02-19T00:00:00.000Z",
+  "payload": "{...json from Apps Script...}"
+}
+```
+
+Notes:
+
+- `GET /api/bookings` serves from this file for fast responses.
+- The cache is refreshed after successful `POST /api/bookings`.
+- On startup, the service creates `cache.json` if missing and warms it once when possible.
 
 ## Local Development
 
