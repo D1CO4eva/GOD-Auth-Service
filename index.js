@@ -192,6 +192,28 @@ const normalizeEmail = (value) => {
 const normalizeProgramTypeForMatch = (value) => normalizeText(value).toLowerCase();
 const normalizeTimeForMatch = (value) => normalizeText(value).replace(/\s+/g, ' ').toLowerCase();
 const asStringOrEmpty = (value) => normalizeText(value);
+const bookingKey = (item) => {
+  const date = normalizeDateString(item?.date) || '';
+  return `${date}|${normalizeProgramTypeForMatch(item?.type)}|${normalizeTimeForMatch(item?.time)}`;
+};
+const isEmailKnown = (value) => {
+  const email = normalizeEmail(value);
+  return email !== 'n/a' && email !== 'na';
+};
+const mergeBookingMetadata = (base, overlay) => {
+  const baseEmail = normalizeEmail(base?.email);
+  const overlayEmail = normalizeEmail(overlay?.email);
+  const baseOccasion = normalizeText(base?.occasion);
+  const overlayOccasion = normalizeText(overlay?.occasion);
+
+  return {
+    date: normalizeDateString(base?.date) || normalizeDateString(overlay?.date) || '',
+    type: normalizeText(base?.type) || normalizeText(overlay?.type),
+    time: normalizeText(base?.time) || normalizeText(overlay?.time),
+    email: isEmailKnown(baseEmail) ? baseEmail : overlayEmail,
+    occasion: baseOccasion || overlayOccasion
+  };
+};
 
 const sanitizeForAppsScript = (value) => {
   if (value === null || value === undefined) return '';
@@ -332,25 +354,29 @@ const extractBookings = (data) => {
 };
 
 const dedupeAndSortBookings = (bookings) => {
-  const unique = Array.from(
-    new Map(
-      bookings.map((item) => [
-        [
-          item.date,
-          normalizeProgramTypeForMatch(item.type),
-          normalizeTimeForMatch(item.time),
-          normalizeEmail(item.email)
-        ].join('|'),
-        {
-          date: item.date,
-          type: normalizeText(item.type),
-          time: normalizeText(item.time),
-          email: normalizeEmail(item.email),
-          occasion: normalizeText(item.occasion)
-        }
-      ])
-    ).values()
-  );
+  const byKey = new Map();
+  for (const item of bookings) {
+    const key = bookingKey(item);
+    if (!key || key.startsWith('|')) continue;
+
+    const normalized = {
+      date: normalizeDateString(item.date) || '',
+      type: normalizeText(item.type),
+      time: normalizeText(item.time),
+      email: normalizeEmail(item.email),
+      occasion: normalizeText(item.occasion)
+    };
+
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, normalized);
+      continue;
+    }
+
+    byKey.set(key, mergeBookingMetadata(normalized, existing));
+  }
+
+  const unique = Array.from(byKey.values());
 
   unique.sort((left, right) => {
     if (left.date !== right.date) return left.date.localeCompare(right.date);
@@ -598,10 +624,31 @@ const refreshCacheFromAppsScript = async () => {
   }
 
   const parsed = parseJsonSafely(result.text);
-  const canonicalPayload =
-    parsed === null
-      ? result.text
-      : toCanonicalPayload(extractBookings(parsed));
+  if (parsed === null) {
+    await writeCacheRecord({
+      updatedAt: new Date().toISOString(),
+      payload: result.text
+    });
+    return {
+      ...result,
+      text: result.text
+    };
+  }
+
+  const incomingBookings = extractBookings(parsed);
+  const existingCacheRecord = await readCacheRecord();
+  const existingParsed = existingCacheRecord.payload ? parseJsonSafely(existingCacheRecord.payload) : null;
+  const existingBookings = existingParsed ? extractBookings(existingParsed) : [];
+
+  // Apps Script doGet currently returns only date/program/time.
+  // Preserve known email/occasion metadata from existing cache by key.
+  const existingByKey = new Map(existingBookings.map((item) => [bookingKey(item), item]));
+  const merged = incomingBookings.map((item) => {
+    const prior = existingByKey.get(bookingKey(item));
+    return mergeBookingMetadata(item, prior || {});
+  });
+
+  const canonicalPayload = toCanonicalPayload(merged);
 
   await writeCacheRecord({
     updatedAt: new Date().toISOString(),
