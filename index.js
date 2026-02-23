@@ -184,14 +184,30 @@ const normalizeText = (value) => {
   return String(value).trim();
 };
 
-const extractBookingsFromRow = (row, dateCol, programCol, timeCol) => {
+const normalizeEmail = (value) => {
+  const normalized = normalizeText(value).toLowerCase();
+  return normalized || 'N/A';
+};
+
+const normalizeProgramTypeForMatch = (value) => normalizeText(value).toLowerCase();
+const normalizeTimeForMatch = (value) => normalizeText(value).replace(/\s+/g, ' ').toLowerCase();
+
+const extractBookingsFromRow = (row, dateCol, programCol, timeCol, emailCol, occasionCol) => {
   if (Array.isArray(row)) {
     const rawDate = dateCol >= 0 ? row[dateCol] : row[0];
     const rawType = programCol >= 0 ? row[programCol] : '';
     const rawTime = timeCol >= 0 ? row[timeCol] : '';
+    const rawEmail = emailCol >= 0 ? row[emailCol] : '';
+    const rawOccasion = occasionCol >= 0 ? row[occasionCol] : '';
     const date = normalizeDateString(rawDate);
     if (!date) return [];
-    return [{ date, type: normalizeText(rawType), time: normalizeText(rawTime) }];
+    return [{
+      date,
+      type: normalizeText(rawType),
+      time: normalizeText(rawTime),
+      email: normalizeEmail(rawEmail),
+      occasion: normalizeText(rawOccasion)
+    }];
   }
 
   if (row && typeof row === 'object') {
@@ -220,14 +236,33 @@ const extractBookingsFromRow = (row, dateCol, programCol, timeCol) => {
       obj.program_time ||
       obj['Time Slot'] ||
       obj['Time'];
+    const rawEmail =
+      obj.email ||
+      obj.Email ||
+      obj.hostEmail ||
+      obj.host_email ||
+      obj['Host email'] ||
+      obj['Host Email'] ||
+      obj['Email Address'];
+    const rawOccasion =
+      obj.occasion ||
+      obj.Occasion ||
+      obj['Occasion / Reason'] ||
+      obj['Occasion'];
     const date = normalizeDateString(rawDate);
     if (!date) return [];
-    return [{ date, type: normalizeText(rawType), time: normalizeText(rawTime) }];
+    return [{
+      date,
+      type: normalizeText(rawType),
+      time: normalizeText(rawTime),
+      email: normalizeEmail(rawEmail),
+      occasion: normalizeText(rawOccasion)
+    }];
   }
 
   if (typeof row === 'string') {
     const date = normalizeDateString(row);
-    return date ? [{ date, type: '', time: '' }] : [];
+    return date ? [{ date, type: '', time: '', email: 'N/A', occasion: '' }] : [];
   }
 
   return [];
@@ -255,6 +290,8 @@ const extractBookings = (data) => {
   let dateCol = -1;
   let programCol = -1;
   let timeCol = -1;
+  let emailCol = -1;
+  let occasionCol = -1;
 
   if (headerRow) {
     const headerStrings = headerRow.map((cell) => String(cell).toLowerCase());
@@ -266,11 +303,15 @@ const extractBookings = (data) => {
       (cell) => cell.includes('type of program') || cell.includes('program type') || cell.includes('program')
     );
     timeCol = headerStrings.findIndex((cell) => cell.includes('time'));
+    emailCol = headerStrings.findIndex((cell) => cell.includes('email'));
+    occasionCol = headerStrings.findIndex((cell) => cell.includes('occasion'));
   }
 
   const bookings = [];
   for (let i = startIndex; i < rows.length; i += 1) {
-    bookings.push(...extractBookingsFromRow(rows[i], dateCol, programCol, timeCol));
+    bookings.push(
+      ...extractBookingsFromRow(rows[i], dateCol, programCol, timeCol, emailCol, occasionCol)
+    );
   }
 
   return bookings;
@@ -280,11 +321,18 @@ const dedupeAndSortBookings = (bookings) => {
   const unique = Array.from(
     new Map(
       bookings.map((item) => [
-        `${item.date}|${normalizeText(item.type).toLowerCase()}|${normalizeText(item.time).toLowerCase()}`,
+        [
+          item.date,
+          normalizeProgramTypeForMatch(item.type),
+          normalizeTimeForMatch(item.time),
+          normalizeEmail(item.email)
+        ].join('|'),
         {
           date: item.date,
           type: normalizeText(item.type),
-          time: normalizeText(item.time)
+          time: normalizeText(item.time),
+          email: normalizeEmail(item.email),
+          occasion: normalizeText(item.occasion)
         }
       ])
     ).values()
@@ -293,7 +341,8 @@ const dedupeAndSortBookings = (bookings) => {
   unique.sort((left, right) => {
     if (left.date !== right.date) return left.date.localeCompare(right.date);
     if (left.type !== right.type) return left.type.localeCompare(right.type);
-    return left.time.localeCompare(right.time);
+    if (left.time !== right.time) return left.time.localeCompare(right.time);
+    return left.email.localeCompare(right.email);
   });
 
   return unique;
@@ -315,6 +364,13 @@ const appendBookingToCache = async (postBody) => {
     postBody['Program Type'] ||
     postBody.program;
   const rawTime = postBody.Time || postBody.time || postBody['Time Slot'] || postBody.programTime;
+  const rawEmail =
+    postBody['Host email'] ||
+    postBody['Host Email'] ||
+    postBody.email ||
+    postBody.Email ||
+    postBody.hostEmail;
+  const rawOccasion = postBody.Occasion || postBody.occasion || postBody['Occasion / Reason'] || '';
 
   const date = normalizeDateString(rawDate);
   if (!date) return;
@@ -324,13 +380,125 @@ const appendBookingToCache = async (postBody) => {
   const existingBookings = extractBookings(cachedData);
   const nextBookings = dedupeAndSortBookings([
     ...existingBookings,
-    { date, type: normalizeText(rawType), time: normalizeText(rawTime) }
+    {
+      date,
+      type: normalizeText(rawType),
+      time: normalizeText(rawTime),
+      email: normalizeEmail(rawEmail),
+      occasion: normalizeText(rawOccasion)
+    }
   ]);
 
   await writeCacheRecord({
     updatedAt: new Date().toISOString(),
     payload: toCanonicalPayload(nextBookings)
   });
+};
+
+const parseReservationLookup = (body) => {
+  const rawProgramType =
+    body.programType ||
+    body.typeOfProgram ||
+    body.type ||
+    body['Type of Program'] ||
+    body['Program Type'] ||
+    '';
+  const rawDate = body.date || body.Date || body.programDate || body['Program Date'] || '';
+  const rawTime = body.time || body.Time || body['Time Slot'] || body.programTime || '';
+  const rawEmail =
+    body.email ||
+    body.Email ||
+    body['Host email'] ||
+    body['Host Email'] ||
+    body.hostEmail ||
+    '';
+
+  return {
+    programType: normalizeText(rawProgramType),
+    date: normalizeDateString(rawDate),
+    time: normalizeText(rawTime),
+    email: normalizeEmail(rawEmail)
+  };
+};
+
+const findMatchingBookingIndex = (bookings, lookup) => {
+  const normalizedProgramType = normalizeProgramTypeForMatch(lookup.programType);
+  const normalizedLookupTime = normalizeTimeForMatch(lookup.time);
+  const normalizedLookupEmail = normalizeEmail(lookup.email);
+  const isNamaBhiksha = normalizedProgramType === 'nama bhiksha';
+
+  return bookings.findIndex((booking) => {
+    if (normalizeDateString(booking.date) !== lookup.date) return false;
+    if (normalizeProgramTypeForMatch(booking.type) !== normalizedProgramType) return false;
+    if (normalizeEmail(booking.email) !== normalizedLookupEmail) return false;
+
+    const bookingTime = normalizeTimeForMatch(booking.time);
+    if (isNamaBhiksha) {
+      return bookingTime.length > 0 && bookingTime === normalizedLookupTime;
+    }
+
+    if (bookingTime.length > 0 && normalizedLookupTime.length > 0) {
+      return bookingTime === normalizedLookupTime;
+    }
+
+    return true;
+  });
+};
+
+const loadBookingsFromCacheOrSource = async (reason) => {
+  const cacheRecord = await readCacheRecord();
+  if (cacheRecord.payload) {
+    const parsed = parseJsonSafely(cacheRecord.payload);
+    return dedupeAndSortBookings(extractBookings(parsed));
+  }
+
+  const refreshResult = await refreshCacheFromAppsScriptSafely(reason);
+  if (!refreshResult?.ok) return [];
+
+  const parsed = parseJsonSafely(refreshResult.text);
+  return dedupeAndSortBookings(extractBookings(parsed));
+};
+
+const updateReservationInCache = async (lookup, updates) => {
+  const cacheRecord = await readCacheRecord();
+  if (!cacheRecord.payload) return false;
+
+  const parsed = parseJsonSafely(cacheRecord.payload);
+  const bookings = dedupeAndSortBookings(extractBookings(parsed));
+  const matchIndex = findMatchingBookingIndex(bookings, lookup);
+  if (matchIndex < 0) return false;
+
+  const next = [...bookings];
+  const current = next[matchIndex];
+  next[matchIndex] = {
+    ...current,
+    date: updates.date || current.date,
+    time: normalizeText(updates.time || current.time),
+    occasion: normalizeText(updates.occasion || current.occasion || '')
+  };
+
+  await writeCacheRecord({
+    updatedAt: new Date().toISOString(),
+    payload: toCanonicalPayload(next)
+  });
+  return true;
+};
+
+const deleteReservationFromCache = async (lookup) => {
+  const cacheRecord = await readCacheRecord();
+  if (!cacheRecord.payload) return false;
+
+  const parsed = parseJsonSafely(cacheRecord.payload);
+  const bookings = dedupeAndSortBookings(extractBookings(parsed));
+  const matchIndex = findMatchingBookingIndex(bookings, lookup);
+  if (matchIndex < 0) return false;
+
+  const next = bookings.filter((_, index) => index !== matchIndex);
+  await writeCacheRecord({
+    updatedAt: new Date().toISOString(),
+    payload: toCanonicalPayload(next)
+  });
+  return true;
 };
 
 const fetchBookingsFromAppsScript = async () => {
@@ -340,6 +508,28 @@ const fetchBookingsFromAppsScript = async () => {
   const response = await fetch(readUrl.toString(), {
     method: 'GET',
     cache: 'no-cache'
+  });
+
+  const text = await response.text();
+  return {
+    ok: response.ok,
+    status: response.status,
+    text
+  };
+};
+
+const postToAppsScript = async (body) => {
+  const payload = {
+    ...body,
+    token: process.env.APPS_SCRIPT_POST_TOKEN
+  };
+
+  const response = await fetch(process.env.APPS_SCRIPT_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload)
   });
 
   const text = await response.text();
@@ -439,21 +629,8 @@ app.post('/api/bookings', async (req, res) => {
   }
 
   try {
-    const payload = {
-      ...req.body,
-      token: process.env.APPS_SCRIPT_POST_TOKEN
-    };
-
-    const response = await fetch(process.env.APPS_SCRIPT_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
-    });
-
-    const text = await response.text();
-    if (response.ok) {
+    const result = await postToAppsScript(req.body || {});
+    if (result.ok) {
       try {
         await appendBookingToCache(req.body || {});
         void refreshCacheFromAppsScriptSafely('post-reconcile');
@@ -461,10 +638,175 @@ app.post('/api/bookings', async (req, res) => {
         console.error('Cache append after POST failed:', cacheError);
       }
     }
-    res.status(response.ok ? 200 : response.status).type('application/json').send(text);
+    res.status(result.ok ? 200 : result.status).type('application/json').send(result.text);
   } catch (error) {
     console.error('Write error:', error);
     res.status(500).json({ error: 'Failed to submit booking.' });
+  }
+});
+
+app.post('/api/reservations/verify', async (req, res) => {
+  if (!hasAllRequiredEnv()) {
+    return res
+      .status(500)
+      .json({ error: 'Server is missing required secrets.', missing: missingRequiredEnv() });
+  }
+
+  try {
+    const lookup = parseReservationLookup(req.body || {});
+    if (!lookup.programType || !lookup.date || !lookup.time || !lookup.email) {
+      return res.status(400).json({ error: 'Program type, date, time-slot, and email are required.' });
+    }
+
+    const bookings = await loadBookingsFromCacheOrSource('reservation-verify');
+    const matchIndex = findMatchingBookingIndex(bookings, lookup);
+    if (matchIndex < 0) {
+      return res.status(404).json({
+        found: false,
+        message: 'Sorry! Could not find your Reservation! Please try again.'
+      });
+    }
+
+    const booking = bookings[matchIndex];
+    return res.status(200).json({
+      found: true,
+      reservation: {
+        programType: booking.type,
+        date: booking.date,
+        time: booking.time,
+        email: booking.email || 'N/A',
+        occasion: booking.occasion || ''
+      }
+    });
+  } catch (error) {
+    console.error('Reservation verify error:', error);
+    return res.status(500).json({ error: 'Failed to verify reservation.' });
+  }
+});
+
+app.post('/api/reservations/update', async (req, res) => {
+  if (!hasAllRequiredEnv()) {
+    return res
+      .status(500)
+      .json({ error: 'Server is missing required secrets.', missing: missingRequiredEnv() });
+  }
+
+  try {
+    const body = req.body || {};
+    const lookup = parseReservationLookup(body.lookup || body.current || body);
+    const updatesSource = body.updates || body.next || body;
+    const nextDate = normalizeDateString(
+      updatesSource.newDate || updatesSource.date || updatesSource.Date || updatesSource['New Date']
+    );
+    const nextTime = normalizeText(
+      updatesSource.newTime || updatesSource.time || updatesSource.Time || updatesSource['New Time']
+    );
+    const nextOccasion = normalizeText(
+      updatesSource.occasion || updatesSource.newOccasion || updatesSource['New Occasion'] || ''
+    );
+
+    if (!lookup.programType || !lookup.date || !lookup.time || !lookup.email) {
+      return res.status(400).json({ error: 'Current reservation details are required.' });
+    }
+    if (!nextDate || !nextTime) {
+      return res.status(400).json({ error: 'New date and new time-slot are required.' });
+    }
+
+    const bookings = await loadBookingsFromCacheOrSource('reservation-update-verify');
+    const matchIndex = findMatchingBookingIndex(bookings, lookup);
+    if (matchIndex < 0) {
+      return res.status(404).json({
+        found: false,
+        message: 'Sorry! Could not find your Reservation! Please try again.'
+      });
+    }
+
+    const result = await postToAppsScript({
+      ...body,
+      action: 'updateReservation',
+      operation: 'updateReservation',
+      reservationLookup: lookup,
+      reservationUpdate: {
+        date: nextDate,
+        time: nextTime,
+        occasion: nextOccasion
+      },
+      'Type of Program': lookup.programType,
+      'Current Date': lookup.date,
+      'Current Time': lookup.time,
+      'Current Email': lookup.email,
+      'New Date': nextDate,
+      'New Time': nextTime,
+      'New Occasion': nextOccasion
+    });
+
+    if (result.ok) {
+      try {
+        await updateReservationInCache(lookup, {
+          date: nextDate,
+          time: nextTime,
+          occasion: nextOccasion
+        });
+        void refreshCacheFromAppsScriptSafely('reservation-update-reconcile');
+      } catch (cacheError) {
+        console.error('Cache update after reservation update failed:', cacheError);
+      }
+    }
+
+    return res.status(result.ok ? 200 : result.status).type('application/json').send(result.text);
+  } catch (error) {
+    console.error('Reservation update error:', error);
+    return res.status(500).json({ error: 'Failed to update reservation.' });
+  }
+});
+
+app.post('/api/reservations/delete', async (req, res) => {
+  if (!hasAllRequiredEnv()) {
+    return res
+      .status(500)
+      .json({ error: 'Server is missing required secrets.', missing: missingRequiredEnv() });
+  }
+
+  try {
+    const body = req.body || {};
+    const lookup = parseReservationLookup(body.lookup || body.current || body);
+    if (!lookup.programType || !lookup.date || !lookup.time || !lookup.email) {
+      return res.status(400).json({ error: 'Reservation details are required.' });
+    }
+
+    const bookings = await loadBookingsFromCacheOrSource('reservation-delete-verify');
+    const matchIndex = findMatchingBookingIndex(bookings, lookup);
+    if (matchIndex < 0) {
+      return res.status(404).json({
+        found: false,
+        message: 'Sorry! Could not find your Reservation! Please try again.'
+      });
+    }
+
+    const result = await postToAppsScript({
+      ...body,
+      action: 'deleteReservation',
+      operation: 'deleteReservation',
+      reservationLookup: lookup,
+      'Type of Program': lookup.programType,
+      'Current Date': lookup.date,
+      'Current Time': lookup.time,
+      'Current Email': lookup.email
+    });
+
+    if (result.ok) {
+      try {
+        await deleteReservationFromCache(lookup);
+        void refreshCacheFromAppsScriptSafely('reservation-delete-reconcile');
+      } catch (cacheError) {
+        console.error('Cache delete after reservation cancel failed:', cacheError);
+      }
+    }
+
+    return res.status(result.ok ? 200 : result.status).type('application/json').send(result.text);
+  } catch (error) {
+    console.error('Reservation delete error:', error);
+    return res.status(500).json({ error: 'Failed to cancel reservation.' });
   }
 });
 
