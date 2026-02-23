@@ -191,6 +191,7 @@ const normalizeEmail = (value) => {
 
 const normalizeProgramTypeForMatch = (value) => normalizeText(value).toLowerCase();
 const normalizeTimeForMatch = (value) => normalizeText(value).replace(/\s+/g, ' ').toLowerCase();
+const asStringOrEmpty = (value) => normalizeText(value);
 
 const sanitizeForAppsScript = (value) => {
   if (value === null || value === undefined) return '';
@@ -536,6 +537,33 @@ const postToAppsScript = async (body) => {
     ...(body || {}),
     token: process.env.APPS_SCRIPT_POST_TOKEN
   });
+  const expectedStringKeys = [
+    'Date',
+    'Time',
+    'Type of Program',
+    'Program Type',
+    'Host Name',
+    'Host Address',
+    'Host Phone Number',
+    'Host email',
+    'Host Email',
+    'Email',
+    'Occasion',
+    'Additional Notes',
+    'Current Date',
+    'Current Time',
+    'Current Email',
+    'New Date',
+    'New Time',
+    'New Occasion',
+    'action',
+    'operation'
+  ];
+  for (const key of expectedStringKeys) {
+    if (payload[key] === undefined || payload[key] === null) {
+      payload[key] = '';
+    }
+  }
 
   const response = await fetch(process.env.APPS_SCRIPT_URL, {
     method: 'POST',
@@ -744,13 +772,19 @@ app.post('/api/reservations/update', async (req, res) => {
         time: nextTime,
         occasion: nextOccasion
       },
-      'Type of Program': lookup.programType,
-      'Current Date': lookup.date,
-      'Current Time': lookup.time,
-      'Current Email': lookup.email,
-      'New Date': nextDate,
-      'New Time': nextTime,
-      'New Occasion': nextOccasion
+      // Legacy/common booking keys kept for Apps Script compatibility.
+      Date: asStringOrEmpty(lookup.date),
+      Time: asStringOrEmpty(lookup.time),
+      'Type of Program': asStringOrEmpty(lookup.programType),
+      'Host email': asStringOrEmpty(lookup.email),
+      Occasion: asStringOrEmpty(nextOccasion),
+      // Explicit current/new keys for reservation update flows.
+      'Current Date': asStringOrEmpty(lookup.date),
+      'Current Time': asStringOrEmpty(lookup.time),
+      'Current Email': asStringOrEmpty(lookup.email),
+      'New Date': asStringOrEmpty(nextDate),
+      'New Time': asStringOrEmpty(nextTime),
+      'New Occasion': asStringOrEmpty(nextOccasion)
     });
 
     if (result.ok) {
@@ -801,10 +835,16 @@ app.post('/api/reservations/delete', async (req, res) => {
       action: 'deleteReservation',
       operation: 'deleteReservation',
       reservationLookup: lookup,
-      'Type of Program': lookup.programType,
-      'Current Date': lookup.date,
-      'Current Time': lookup.time,
-      'Current Email': lookup.email
+      // Legacy/common booking keys kept for Apps Script compatibility.
+      Date: asStringOrEmpty(lookup.date),
+      Time: asStringOrEmpty(lookup.time),
+      'Type of Program': asStringOrEmpty(lookup.programType),
+      'Host email': asStringOrEmpty(lookup.email),
+      Occasion: '',
+      // Explicit keys for reservation delete flows.
+      'Current Date': asStringOrEmpty(lookup.date),
+      'Current Time': asStringOrEmpty(lookup.time),
+      'Current Email': asStringOrEmpty(lookup.email)
     });
 
     if (result.ok) {
