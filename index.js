@@ -565,7 +565,17 @@ const postToAppsScript = async (body) => {
     }
   }
 
-  const response = await fetch(process.env.APPS_SCRIPT_URL, {
+  const postUrl = new URL(process.env.APPS_SCRIPT_URL);
+  // Send key fields as query params too, so Apps Script implementations that use
+  // e.parameter.* instead of JSON body still receive non-null strings.
+  for (const key of expectedStringKeys) {
+    const value = payload[key];
+    if (typeof value === 'string' && value.length > 0) {
+      postUrl.searchParams.set(key, value);
+    }
+  }
+
+  const response = await fetch(postUrl.toString(), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
