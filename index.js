@@ -192,6 +192,19 @@ const normalizeEmail = (value) => {
 const normalizeProgramTypeForMatch = (value) => normalizeText(value).toLowerCase();
 const normalizeTimeForMatch = (value) => normalizeText(value).replace(/\s+/g, ' ').toLowerCase();
 
+const sanitizeForAppsScript = (value) => {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return value.map(sanitizeForAppsScript);
+  if (typeof value === 'object') {
+    const next = {};
+    for (const [key, child] of Object.entries(value)) {
+      next[key] = sanitizeForAppsScript(child);
+    }
+    return next;
+  }
+  return value;
+};
+
 const extractBookingsFromRow = (row, dateCol, programCol, timeCol, emailCol, occasionCol) => {
   if (Array.isArray(row)) {
     const rawDate = dateCol >= 0 ? row[dateCol] : row[0];
@@ -519,10 +532,10 @@ const fetchBookingsFromAppsScript = async () => {
 };
 
 const postToAppsScript = async (body) => {
-  const payload = {
-    ...body,
+  const payload = sanitizeForAppsScript({
+    ...(body || {}),
     token: process.env.APPS_SCRIPT_POST_TOKEN
-  };
+  });
 
   const response = await fetch(process.env.APPS_SCRIPT_URL, {
     method: 'POST',
