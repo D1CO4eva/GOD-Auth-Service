@@ -186,10 +186,50 @@ const normalizeText = (value) => {
 
 const normalizeProgramTypeForMatch = (value) => normalizeText(value).toLowerCase();
 const normalizeTimeForMatch = (value) => normalizeText(value).replace(/\s+/g, ' ').toLowerCase();
+const normalizeEmailForMatch = (value) => normalizeText(value).toLowerCase();
+const normalizeTokenForMatch = (value) => normalizeText(value).toLowerCase();
 const asStringOrEmpty = (value) => normalizeText(value);
+const normalizeMaybeUnknown = (value, fallback = 'N/A') => {
+  const normalized = normalizeText(value);
+  if (!normalized) return fallback;
+  const lowered = normalized.toLowerCase();
+  if (lowered === 'n/a' || lowered === 'na' || lowered === 'none' || lowered === 'null') {
+    return fallback;
+  }
+  return normalized;
+};
+const normalizeEmail = (value) => normalizeMaybeUnknown(value, 'N/A');
+const normalizeConfirmation = (value) => normalizeMaybeUnknown(value, 'N/A');
+const normalizeOccasion = (value) => normalizeText(value);
+const isKnownValue = (value) => normalizeMaybeUnknown(value, 'N/A') !== 'N/A';
 const bookingKey = (item) => {
   const date = normalizeDateString(item?.date) || '';
+  const type = normalizeProgramTypeForMatch(item?.type);
+  const time = normalizeTimeForMatch(item?.time);
+  const email = normalizeEmailForMatch(normalizeEmail(item?.email));
+  const confirmation = normalizeTokenForMatch(normalizeConfirmation(item?.confirmationNumber));
+  return `${date}|${type}|${time}|${email}|${confirmation}`;
+};
+const looseBookingKey = (item) => {
+  const date = normalizeDateString(item?.date) || '';
   return `${date}|${normalizeProgramTypeForMatch(item?.type)}|${normalizeTimeForMatch(item?.time)}`;
+};
+const mergeBookingMetadata = (incoming, prior) => {
+  const incomingEmail = normalizeEmail(incoming?.email);
+  const priorEmail = normalizeEmail(prior?.email);
+  const incomingConfirmation = normalizeConfirmation(incoming?.confirmationNumber);
+  const priorConfirmation = normalizeConfirmation(prior?.confirmationNumber);
+  const incomingOccasion = normalizeOccasion(incoming?.occasion);
+  const priorOccasion = normalizeOccasion(prior?.occasion);
+
+  return {
+    date: normalizeDateString(incoming?.date) || normalizeDateString(prior?.date) || '',
+    type: normalizeText(incoming?.type) || normalizeText(prior?.type),
+    time: normalizeText(incoming?.time) || normalizeText(prior?.time),
+    email: isKnownValue(incomingEmail) ? incomingEmail : priorEmail,
+    confirmationNumber: isKnownValue(incomingConfirmation) ? incomingConfirmation : priorConfirmation,
+    occasion: incomingOccasion || priorOccasion
+  };
 };
 
 const sanitizeForAppsScript = (value) => {
@@ -205,17 +245,31 @@ const sanitizeForAppsScript = (value) => {
   return value;
 };
 
-const extractBookingsFromRow = (row, dateCol, programCol, timeCol) => {
+const extractBookingsFromRow = (
+  row,
+  dateCol,
+  programCol,
+  timeCol,
+  emailCol,
+  confirmationCol,
+  occasionCol
+) => {
   if (Array.isArray(row)) {
     const rawDate = dateCol >= 0 ? row[dateCol] : row[0];
     const rawType = programCol >= 0 ? row[programCol] : '';
     const rawTime = timeCol >= 0 ? row[timeCol] : '';
+    const rawEmail = emailCol >= 0 ? row[emailCol] : '';
+    const rawConfirmation = confirmationCol >= 0 ? row[confirmationCol] : '';
+    const rawOccasion = occasionCol >= 0 ? row[occasionCol] : '';
     const date = normalizeDateString(rawDate);
     if (!date) return [];
     return [{
       date,
       type: normalizeText(rawType),
-      time: normalizeText(rawTime)
+      time: normalizeText(rawTime),
+      email: normalizeEmail(rawEmail),
+      confirmationNumber: normalizeConfirmation(rawConfirmation),
+      occasion: normalizeOccasion(rawOccasion)
     }];
   }
 
@@ -245,18 +299,43 @@ const extractBookingsFromRow = (row, dateCol, programCol, timeCol) => {
       obj.program_time ||
       obj['Time Slot'] ||
       obj['Time'];
+    const rawEmail =
+      obj.hostEmail ||
+      obj.host_email ||
+      obj.email ||
+      obj.Email ||
+      obj['Host email'] ||
+      obj['Host Email'] ||
+      obj['Email Address'];
+    const rawConfirmation =
+      obj.confirmationNumber ||
+      obj.confirmation_number ||
+      obj.confirmation ||
+      obj.Confirmation ||
+      obj['Confirmation Number'] ||
+      obj['confirmation number'];
+    const rawOccasion =
+      obj.occasion ||
+      obj.Occasion ||
+      obj['Occasion'] ||
+      obj['Occasion / Reason'];
     const date = normalizeDateString(rawDate);
     if (!date) return [];
     return [{
       date,
       type: normalizeText(rawType),
-      time: normalizeText(rawTime)
+      time: normalizeText(rawTime),
+      email: normalizeEmail(rawEmail),
+      confirmationNumber: normalizeConfirmation(rawConfirmation),
+      occasion: normalizeOccasion(rawOccasion)
     }];
   }
 
   if (typeof row === 'string') {
     const date = normalizeDateString(row);
-    return date ? [{ date, type: '', time: '' }] : [];
+    return date
+      ? [{ date, type: '', time: '', email: 'N/A', confirmationNumber: 'N/A', occasion: '' }]
+      : [];
   }
 
   return [];
@@ -284,6 +363,9 @@ const extractBookings = (data) => {
   let dateCol = -1;
   let programCol = -1;
   let timeCol = -1;
+  let emailCol = -1;
+  let confirmationCol = -1;
+  let occasionCol = -1;
 
   if (headerRow) {
     const headerStrings = headerRow.map((cell) => String(cell).toLowerCase());
@@ -295,11 +377,28 @@ const extractBookings = (data) => {
       (cell) => cell.includes('type of program') || cell.includes('program type') || cell.includes('program')
     );
     timeCol = headerStrings.findIndex((cell) => cell.includes('time'));
+    emailCol = headerStrings.findIndex((cell) =>
+      cell.includes('host email') || cell === 'email' || cell.includes('email')
+    );
+    confirmationCol = headerStrings.findIndex((cell) =>
+      cell.includes('confirmation number') || cell.includes('confirmation')
+    );
+    occasionCol = headerStrings.findIndex((cell) => cell.includes('occasion'));
   }
 
   const bookings = [];
   for (let i = startIndex; i < rows.length; i += 1) {
-    bookings.push(...extractBookingsFromRow(rows[i], dateCol, programCol, timeCol));
+    bookings.push(
+      ...extractBookingsFromRow(
+        rows[i],
+        dateCol,
+        programCol,
+        timeCol,
+        emailCol,
+        confirmationCol,
+        occasionCol
+      )
+    );
   }
 
   return bookings;
@@ -314,7 +413,10 @@ const dedupeAndSortBookings = (bookings) => {
     const normalized = {
       date: normalizeDateString(item.date) || '',
       type: normalizeText(item.type),
-      time: normalizeText(item.time)
+      time: normalizeText(item.time),
+      email: normalizeEmail(item.email),
+      confirmationNumber: normalizeConfirmation(item.confirmationNumber),
+      occasion: normalizeOccasion(item.occasion)
     };
 
     const existing = byKey.get(key);
@@ -323,7 +425,7 @@ const dedupeAndSortBookings = (bookings) => {
       continue;
     }
 
-    byKey.set(key, normalized);
+    byKey.set(key, mergeBookingMetadata(normalized, existing));
   }
 
   const unique = Array.from(byKey.values());
@@ -331,7 +433,9 @@ const dedupeAndSortBookings = (bookings) => {
   unique.sort((left, right) => {
     if (left.date !== right.date) return left.date.localeCompare(right.date);
     if (left.type !== right.type) return left.type.localeCompare(right.type);
-    return left.time.localeCompare(right.time);
+    if (left.time !== right.time) return left.time.localeCompare(right.time);
+    if (left.email !== right.email) return left.email.localeCompare(right.email);
+    return left.confirmationNumber.localeCompare(right.confirmationNumber);
   });
 
   return unique;
@@ -353,6 +457,22 @@ const appendBookingToCache = async (postBody) => {
     postBody['Program Type'] ||
     postBody.program;
   const rawTime = postBody.Time || postBody.time || postBody['Time Slot'] || postBody.programTime;
+  const rawEmail =
+    postBody['Host email'] ||
+    postBody['Host Email'] ||
+    postBody.hostEmail ||
+    postBody.email ||
+    postBody.Email;
+  const rawConfirmation =
+    postBody['Confirmation Number'] ||
+    postBody.confirmationNumber ||
+    postBody.confirmation ||
+    postBody['confirmation number'];
+  const rawOccasion =
+    postBody.Occasion ||
+    postBody.occasion ||
+    postBody['Occasion / Reason'] ||
+    '';
 
   const date = normalizeDateString(rawDate);
   if (!date) return;
@@ -365,7 +485,10 @@ const appendBookingToCache = async (postBody) => {
     {
       date,
       type: normalizeText(rawType),
-      time: normalizeText(rawTime)
+      time: normalizeText(rawTime),
+      email: normalizeEmail(rawEmail),
+      confirmationNumber: normalizeConfirmation(rawConfirmation),
+      occasion: normalizeOccasion(rawOccasion)
     }
   ]);
 
@@ -385,22 +508,44 @@ const parseReservationLookup = (body) => {
     '';
   const rawDate = body.date || body.Date || body.programDate || body['Program Date'] || '';
   const rawTime = body.time || body.Time || body['Time Slot'] || body.programTime || '';
+  const rawEmail =
+    body.email ||
+    body.Email ||
+    body.hostEmail ||
+    body['Host email'] ||
+    body['Host Email'] ||
+    '';
+  const rawConfirmation =
+    body.confirmationNumber ||
+    body.confirmation ||
+    body['Confirmation Number'] ||
+    body['confirmation number'] ||
+    '';
 
   return {
     programType: normalizeText(rawProgramType),
     date: normalizeDateString(rawDate),
-    time: normalizeText(rawTime)
+    time: normalizeText(rawTime),
+    email: normalizeEmail(rawEmail),
+    confirmationNumber: normalizeConfirmation(rawConfirmation)
   };
 };
 
 const findMatchingBookingIndex = (bookings, lookup) => {
   const normalizedProgramType = normalizeProgramTypeForMatch(lookup.programType);
   const normalizedLookupTime = normalizeTimeForMatch(lookup.time);
+  const normalizedLookupEmail = normalizeEmailForMatch(normalizeEmail(lookup.email));
+  const normalizedLookupConfirmation = normalizeTokenForMatch(normalizeConfirmation(lookup.confirmationNumber));
 
   return bookings.findIndex((booking) => {
     if (normalizeDateString(booking.date) !== lookup.date) return false;
     if (normalizeProgramTypeForMatch(booking.type) !== normalizedProgramType) return false;
-    return normalizeTimeForMatch(booking.time) === normalizedLookupTime;
+    if (normalizeTimeForMatch(booking.time) !== normalizedLookupTime) return false;
+    if (normalizeEmailForMatch(normalizeEmail(booking.email)) !== normalizedLookupEmail) return false;
+    return (
+      normalizeTokenForMatch(normalizeConfirmation(booking.confirmationNumber)) ===
+      normalizedLookupConfirmation
+    );
   });
 };
 
@@ -492,10 +637,15 @@ const postToAppsScript = async (body) => {
     'Host email',
     'Host Email',
     'Email',
+    'Confirmation Number',
+    'confirmationNumber',
+    'confirmation',
     'Occasion',
     'Additional Notes',
     'Current Date',
     'Current Time',
+    'Current Email',
+    'Current Confirmation Number',
     'New Date',
     'New Time',
     'action',
@@ -552,7 +702,20 @@ const refreshCacheFromAppsScript = async () => {
   }
 
   const incomingBookings = extractBookings(parsed);
-  const canonicalPayload = toCanonicalPayload(incomingBookings);
+  const existingCacheRecord = await readCacheRecord();
+  const existingParsed = existingCacheRecord.payload ? parseJsonSafely(existingCacheRecord.payload) : null;
+  const existingBookings = existingParsed ? extractBookings(existingParsed) : [];
+  const existingLooseMap = new Map();
+  for (const item of existingBookings) {
+    existingLooseMap.set(looseBookingKey(item), item);
+  }
+
+  const enrichedIncoming = incomingBookings.map((item) => {
+    const prior = existingLooseMap.get(looseBookingKey(item));
+    return mergeBookingMetadata(item, prior || {});
+  });
+
+  const canonicalPayload = toCanonicalPayload(enrichedIncoming);
 
   await writeCacheRecord({
     updatedAt: new Date().toISOString(),
@@ -672,8 +835,16 @@ app.post('/api/reservations/verify', async (req, res) => {
 
   try {
     const lookup = parseReservationLookup(req.body || {});
-    if (!lookup.programType || !lookup.date || !lookup.time) {
-      return res.status(400).json({ error: 'Program type, date, and time-slot are required.' });
+    if (
+      !lookup.programType ||
+      !lookup.date ||
+      !lookup.time ||
+      !isKnownValue(lookup.email) ||
+      !isKnownValue(lookup.confirmationNumber)
+    ) {
+      return res.status(400).json({
+        error: 'Program type, date, time-slot, email, and confirmation number are required.'
+      });
     }
 
     const bookings = await loadBookingsFromCacheOrSource('reservation-verify');
@@ -691,7 +862,10 @@ app.post('/api/reservations/verify', async (req, res) => {
       reservation: {
         programType: booking.type,
         date: booking.date,
-        time: booking.time
+        time: booking.time,
+        email: normalizeEmail(booking.email),
+        confirmationNumber: normalizeConfirmation(booking.confirmationNumber),
+        occasion: normalizeOccasion(booking.occasion)
       }
     });
   } catch (error) {
@@ -718,7 +892,13 @@ app.post('/api/reservations/update', async (req, res) => {
       updatesSource.newTime || updatesSource.time || updatesSource.Time || updatesSource['New Time']
     );
 
-    if (!lookup.programType || !lookup.date || !lookup.time) {
+    if (
+      !lookup.programType ||
+      !lookup.date ||
+      !lookup.time ||
+      !isKnownValue(lookup.email) ||
+      !isKnownValue(lookup.confirmationNumber)
+    ) {
       return res.status(400).json({ error: 'Current reservation details are required.' });
     }
     if (!nextDate || !nextTime) {
@@ -747,9 +927,13 @@ app.post('/api/reservations/update', async (req, res) => {
       Date: asStringOrEmpty(lookup.date),
       Time: asStringOrEmpty(lookup.time),
       'Type of Program': asStringOrEmpty(lookup.programType),
+      'Host email': asStringOrEmpty(lookup.email),
+      'Confirmation Number': asStringOrEmpty(lookup.confirmationNumber),
       // Explicit current/new keys for reservation update flows.
       'Current Date': asStringOrEmpty(lookup.date),
       'Current Time': asStringOrEmpty(lookup.time),
+      'Current Email': asStringOrEmpty(lookup.email),
+      'Current Confirmation Number': asStringOrEmpty(lookup.confirmationNumber),
       'New Date': asStringOrEmpty(nextDate),
       'New Time': asStringOrEmpty(nextTime)
     });
@@ -783,7 +967,13 @@ app.post('/api/reservations/delete', async (req, res) => {
   try {
     const body = req.body || {};
     const lookup = parseReservationLookup(body.lookup || body.current || body);
-    if (!lookup.programType || !lookup.date || !lookup.time) {
+    if (
+      !lookup.programType ||
+      !lookup.date ||
+      !lookup.time ||
+      !isKnownValue(lookup.email) ||
+      !isKnownValue(lookup.confirmationNumber)
+    ) {
       return res.status(400).json({ error: 'Reservation details are required.' });
     }
 
@@ -805,9 +995,13 @@ app.post('/api/reservations/delete', async (req, res) => {
       Date: asStringOrEmpty(lookup.date),
       Time: asStringOrEmpty(lookup.time),
       'Type of Program': asStringOrEmpty(lookup.programType),
+      'Host email': asStringOrEmpty(lookup.email),
+      'Confirmation Number': asStringOrEmpty(lookup.confirmationNumber),
       // Explicit keys for reservation delete flows.
       'Current Date': asStringOrEmpty(lookup.date),
-      'Current Time': asStringOrEmpty(lookup.time)
+      'Current Time': asStringOrEmpty(lookup.time),
+      'Current Email': asStringOrEmpty(lookup.email),
+      'Current Confirmation Number': asStringOrEmpty(lookup.confirmationNumber)
     });
 
     if (result.ok) {
