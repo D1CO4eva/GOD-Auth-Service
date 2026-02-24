@@ -15,7 +15,7 @@ It proxies browser/app requests to a Google Apps Script web app that reads/write
   Forwards JSON to your Apps Script `APPS_SCRIPT_URL` with `token: APPS_SCRIPT_POST_TOKEN` merged into the body.  
   On successful write, appends/updates `cache.json` directly from the POST payload.
 - `POST /api/reservations/verify`  
-  Verifies whether a reservation exists in cache/apps-script data for the provided `programType`, `date`, `time`, and `email`.
+  Verifies whether a reservation exists for the provided `programType`, `date`, and `time`.
 - `POST /api/reservations/update`  
   Forwards reservation update request to Apps Script and updates local cache on success.
 - `POST /api/reservations/delete`  
@@ -62,7 +62,7 @@ Notes:
 
 - `GET /api/bookings` serves from this file for fast responses.
 - After successful `POST /api/bookings`, cache is updated directly from submitted payload (no full-sheet re-fetch).
-- Cache stores booking records with `date`, `type`, `time`, `email` (defaults to `N/A` if empty), and `occasion`.
+- Cache stores booking records with `date`, `type`, and `time`.
 - Cache is also reconciled from Apps Script in the background (startup + interval) so manual Google Sheet edits are reflected.
 
 ## Local Development
