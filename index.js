@@ -443,7 +443,7 @@ const dedupeAndSortBookings = (bookings) => {
 
 const toCanonicalPayload = (bookings) => JSON.stringify({ bookings: dedupeAndSortBookings(bookings) });
 
-const appendBookingToCache = async (postBody) => {
+const appendBookingToCache = async (postBody, postResult) => {
   const rawDate =
     postBody.Date ||
     postBody.date ||
@@ -467,6 +467,8 @@ const appendBookingToCache = async (postBody) => {
     postBody['Confirmation Number'] ||
     postBody.confirmationNumber ||
     postBody.confirmation ||
+    postResult?.confirmationNumber ||
+    postResult?.['Confirmation Number'] ||
     postBody['confirmation number'];
   const rawOccasion =
     postBody.Occasion ||
@@ -540,7 +542,7 @@ const findMatchingBookingIndex = (bookings, lookup) => {
   return bookings.findIndex((booking) => {
     if (normalizeDateString(booking.date) !== lookup.date) return false;
     if (normalizeProgramTypeForMatch(booking.type) !== normalizedProgramType) return false;
-    if (normalizeTimeForMatch(booking.time) !== normalizedLookupTime) return false;
+    if (normalizedLookupTime && normalizeTimeForMatch(booking.time) !== normalizedLookupTime) return false;
     if (normalizeEmailForMatch(normalizeEmail(booking.email)) !== normalizedLookupEmail) return false;
     return (
       normalizeTokenForMatch(normalizeConfirmation(booking.confirmationNumber)) ===
@@ -648,6 +650,7 @@ const postToAppsScript = async (body) => {
     'Current Confirmation Number',
     'New Date',
     'New Time',
+    'newDate',
     'action',
     'operation'
   ];
@@ -813,7 +816,8 @@ app.post('/api/bookings', async (req, res) => {
     const result = await postToAppsScript(req.body || {});
     if (result.ok) {
       try {
-        await appendBookingToCache(req.body || {});
+        const parsedResult = parseJsonSafely(result.text) || {};
+        await appendBookingToCache(req.body || {}, parsedResult);
         void refreshCacheFromAppsScriptSafely('post-reconcile');
       } catch (cacheError) {
         console.error('Cache append after POST failed:', cacheError);
@@ -838,12 +842,11 @@ app.post('/api/reservations/verify', async (req, res) => {
     if (
       !lookup.programType ||
       !lookup.date ||
-      !lookup.time ||
       !isKnownValue(lookup.email) ||
       !isKnownValue(lookup.confirmationNumber)
     ) {
       return res.status(400).json({
-        error: 'Program type, date, time-slot, email, and confirmation number are required.'
+        error: 'Program type, date, email, and confirmation number are required.'
       });
     }
 
@@ -888,21 +891,17 @@ app.post('/api/reservations/update', async (req, res) => {
     const nextDate = normalizeDateString(
       updatesSource.newDate || updatesSource.date || updatesSource.Date || updatesSource['New Date']
     );
-    const nextTime = normalizeText(
-      updatesSource.newTime || updatesSource.time || updatesSource.Time || updatesSource['New Time']
-    );
 
     if (
       !lookup.programType ||
       !lookup.date ||
-      !lookup.time ||
       !isKnownValue(lookup.email) ||
       !isKnownValue(lookup.confirmationNumber)
     ) {
       return res.status(400).json({ error: 'Current reservation details are required.' });
     }
-    if (!nextDate || !nextTime) {
-      return res.status(400).json({ error: 'New date and new time-slot are required.' });
+    if (!nextDate) {
+      return res.status(400).json({ error: 'New date is required.' });
     }
 
     const bookings = await loadBookingsFromCacheOrSource('reservation-update-verify');
@@ -916,33 +915,29 @@ app.post('/api/reservations/update', async (req, res) => {
 
     const result = await postToAppsScript({
       ...body,
-      action: 'updateReservation',
-      operation: 'updateReservation',
+      action: 'reschedule',
+      operation: 'reschedule',
       reservationLookup: lookup,
       reservationUpdate: {
-        date: nextDate,
-        time: nextTime
+        date: nextDate
       },
       // Legacy/common booking keys kept for Apps Script compatibility.
       Date: asStringOrEmpty(lookup.date),
-      Time: asStringOrEmpty(lookup.time),
       'Type of Program': asStringOrEmpty(lookup.programType),
       'Host email': asStringOrEmpty(lookup.email),
       'Confirmation Number': asStringOrEmpty(lookup.confirmationNumber),
+      newDate: asStringOrEmpty(nextDate),
       // Explicit current/new keys for reservation update flows.
       'Current Date': asStringOrEmpty(lookup.date),
-      'Current Time': asStringOrEmpty(lookup.time),
       'Current Email': asStringOrEmpty(lookup.email),
       'Current Confirmation Number': asStringOrEmpty(lookup.confirmationNumber),
-      'New Date': asStringOrEmpty(nextDate),
-      'New Time': asStringOrEmpty(nextTime)
+      'New Date': asStringOrEmpty(nextDate)
     });
 
     if (result.ok) {
       try {
         await updateReservationInCache(lookup, {
-          date: nextDate,
-          time: nextTime
+          date: nextDate
         });
         void refreshCacheFromAppsScriptSafely('reservation-update-reconcile');
       } catch (cacheError) {
@@ -970,7 +965,6 @@ app.post('/api/reservations/delete', async (req, res) => {
     if (
       !lookup.programType ||
       !lookup.date ||
-      !lookup.time ||
       !isKnownValue(lookup.email) ||
       !isKnownValue(lookup.confirmationNumber)
     ) {
@@ -988,18 +982,16 @@ app.post('/api/reservations/delete', async (req, res) => {
 
     const result = await postToAppsScript({
       ...body,
-      action: 'deleteReservation',
-      operation: 'deleteReservation',
+      action: 'cancel',
+      operation: 'cancel',
       reservationLookup: lookup,
       // Legacy/common booking keys kept for Apps Script compatibility.
       Date: asStringOrEmpty(lookup.date),
-      Time: asStringOrEmpty(lookup.time),
       'Type of Program': asStringOrEmpty(lookup.programType),
       'Host email': asStringOrEmpty(lookup.email),
       'Confirmation Number': asStringOrEmpty(lookup.confirmationNumber),
       // Explicit keys for reservation delete flows.
       'Current Date': asStringOrEmpty(lookup.date),
-      'Current Time': asStringOrEmpty(lookup.time),
       'Current Email': asStringOrEmpty(lookup.email),
       'Current Confirmation Number': asStringOrEmpty(lookup.confirmationNumber)
     });
