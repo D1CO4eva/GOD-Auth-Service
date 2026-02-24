@@ -891,6 +891,13 @@ app.post('/api/reservations/update', async (req, res) => {
     const nextDate = normalizeDateString(
       updatesSource.newDate || updatesSource.date || updatesSource.Date || updatesSource['New Date']
     );
+    const nextTime = normalizeText(
+      updatesSource.newTime ||
+        updatesSource.time ||
+        updatesSource.Time ||
+        updatesSource['New Time'] ||
+        updatesSource['Time Slot']
+    );
 
     if (
       !lookup.programType ||
@@ -918,6 +925,7 @@ app.post('/api/reservations/update', async (req, res) => {
       matchedBooking.confirmationNumber || lookup.confirmationNumber
     );
     const matchedDate = normalizeDateString(matchedBooking.date) || lookup.date;
+    const matchedTime = normalizeText(matchedBooking.time || lookup.time);
 
     const result = await postToAppsScript({
       ...body,
@@ -925,25 +933,31 @@ app.post('/api/reservations/update', async (req, res) => {
       operation: 'reschedule',
       reservationLookup: lookup,
       reservationUpdate: {
-        date: nextDate
+        date: nextDate,
+        ...(nextTime ? { time: nextTime } : {})
       },
       // Legacy/common booking keys kept for Apps Script compatibility.
       Date: asStringOrEmpty(matchedDate),
+      Time: asStringOrEmpty(matchedTime),
       'Type of Program': asStringOrEmpty(lookup.programType),
       'Host email': asStringOrEmpty(matchedEmail),
       'Confirmation Number': asStringOrEmpty(matchedConfirmation),
       newDate: asStringOrEmpty(nextDate),
+      ...(nextTime ? { newTime: asStringOrEmpty(nextTime) } : {}),
       // Explicit current/new keys for reservation update flows.
       'Current Date': asStringOrEmpty(matchedDate),
+      'Current Time': asStringOrEmpty(matchedTime),
       'Current Email': asStringOrEmpty(matchedEmail),
       'Current Confirmation Number': asStringOrEmpty(matchedConfirmation),
-      'New Date': asStringOrEmpty(nextDate)
+      'New Date': asStringOrEmpty(nextDate),
+      ...(nextTime ? { 'New Time': asStringOrEmpty(nextTime) } : {})
     });
 
     if (result.ok) {
       try {
         await updateReservationInCache(lookup, {
-          date: nextDate
+          date: nextDate,
+          ...(nextTime ? { time: nextTime } : {})
         });
         void refreshCacheFromAppsScriptSafely('reservation-update-reconcile');
       } catch (cacheError) {
