@@ -912,6 +912,12 @@ app.post('/api/reservations/update', async (req, res) => {
         message: 'Sorry! Could not find your Reservation! Please try again.'
       });
     }
+    const matchedBooking = bookings[matchIndex];
+    const matchedEmail = normalizeEmail(matchedBooking.email || lookup.email);
+    const matchedConfirmation = normalizeConfirmation(
+      matchedBooking.confirmationNumber || lookup.confirmationNumber
+    );
+    const matchedDate = normalizeDateString(matchedBooking.date) || lookup.date;
 
     const result = await postToAppsScript({
       ...body,
@@ -922,15 +928,15 @@ app.post('/api/reservations/update', async (req, res) => {
         date: nextDate
       },
       // Legacy/common booking keys kept for Apps Script compatibility.
-      Date: asStringOrEmpty(lookup.date),
+      Date: asStringOrEmpty(matchedDate),
       'Type of Program': asStringOrEmpty(lookup.programType),
-      'Host email': asStringOrEmpty(lookup.email),
-      'Confirmation Number': asStringOrEmpty(lookup.confirmationNumber),
+      'Host email': asStringOrEmpty(matchedEmail),
+      'Confirmation Number': asStringOrEmpty(matchedConfirmation),
       newDate: asStringOrEmpty(nextDate),
       // Explicit current/new keys for reservation update flows.
-      'Current Date': asStringOrEmpty(lookup.date),
-      'Current Email': asStringOrEmpty(lookup.email),
-      'Current Confirmation Number': asStringOrEmpty(lookup.confirmationNumber),
+      'Current Date': asStringOrEmpty(matchedDate),
+      'Current Email': asStringOrEmpty(matchedEmail),
+      'Current Confirmation Number': asStringOrEmpty(matchedConfirmation),
       'New Date': asStringOrEmpty(nextDate)
     });
 
@@ -979,6 +985,12 @@ app.post('/api/reservations/delete', async (req, res) => {
         message: 'Sorry! Could not find your Reservation! Please try again.'
       });
     }
+    const matchedBooking = bookings[matchIndex];
+    const matchedEmail = normalizeEmail(matchedBooking.email || lookup.email);
+    const matchedConfirmation = normalizeConfirmation(
+      matchedBooking.confirmationNumber || lookup.confirmationNumber
+    );
+    const matchedDate = normalizeDateString(matchedBooking.date) || lookup.date;
 
     const result = await postToAppsScript({
       ...body,
@@ -986,14 +998,14 @@ app.post('/api/reservations/delete', async (req, res) => {
       operation: 'cancel',
       reservationLookup: lookup,
       // Legacy/common booking keys kept for Apps Script compatibility.
-      Date: asStringOrEmpty(lookup.date),
+      Date: asStringOrEmpty(matchedDate),
       'Type of Program': asStringOrEmpty(lookup.programType),
-      'Host email': asStringOrEmpty(lookup.email),
-      'Confirmation Number': asStringOrEmpty(lookup.confirmationNumber),
+      'Host email': asStringOrEmpty(matchedEmail),
+      'Confirmation Number': asStringOrEmpty(matchedConfirmation),
       // Explicit keys for reservation delete flows.
-      'Current Date': asStringOrEmpty(lookup.date),
-      'Current Email': asStringOrEmpty(lookup.email),
-      'Current Confirmation Number': asStringOrEmpty(lookup.confirmationNumber)
+      'Current Date': asStringOrEmpty(matchedDate),
+      'Current Email': asStringOrEmpty(matchedEmail),
+      'Current Confirmation Number': asStringOrEmpty(matchedConfirmation)
     });
 
     if (result.ok) {
