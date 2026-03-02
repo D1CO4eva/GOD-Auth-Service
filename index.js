@@ -1209,7 +1209,7 @@ app.post('/api/reservations/delete', async (req, res) => {
   }
 });
 
-app.get('/menu', async (_req, res) => {
+app.get(['/menu', '/api/menu'], async (_req, res) => {
   try {
     const cacheRecord = await readMenuCacheRecord();
     res.setHeader('X-Menu-Source', 'menu-cache-file');
@@ -1220,7 +1220,7 @@ app.get('/menu', async (_req, res) => {
   }
 });
 
-app.post('/menu', async (req, res) => {
+app.post(['/menu', '/api/menu'], async (req, res) => {
   if (!hasAllMenuEnv()) {
     return res
       .status(500)
