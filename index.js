@@ -9,10 +9,16 @@ const __dirname = path.dirname(__filename);
 const distPath = path.join(__dirname, 'dist');
 const indexHtmlPath = path.join(distPath, 'index.html');
 const cacheFilePath = path.join(__dirname, 'cache.json');
+const menuCacheFilePath = path.join(__dirname, 'menu_cache.json');
 const emptyCacheRecord = {
   updatedAt: null,
   payload: null
 };
+const emptyMenuCacheRecord = {
+  updatedAt: null,
+  posts: []
+};
+const MENU_CACHE_LIMIT = 6;
 const CACHE_BACKGROUND_REFRESH_INTERVAL_SECONDS = Number(
   process.env.CACHE_BACKGROUND_REFRESH_INTERVAL_SECONDS || 300
 );
@@ -76,6 +82,7 @@ const REQUIRED_ENV_KEYS = [
   'APPS_SCRIPT_GET_TOKEN',
   'APPS_SCRIPT_POST_TOKEN'
 ];
+const MENU_REQUIRED_ENV_KEYS = ['MENU_SCRIPT_URL'];
 
 const previewSecret = (value) => {
   if (!value) return '(missing)';
@@ -86,6 +93,8 @@ const previewSecret = (value) => {
 
 const missingRequiredEnv = () => REQUIRED_ENV_KEYS.filter((k) => !process.env[k]);
 const hasAllRequiredEnv = () => missingRequiredEnv().length === 0;
+const missingMenuEnv = () => MENU_REQUIRED_ENV_KEYS.filter((k) => !process.env[k]);
+const hasAllMenuEnv = () => missingMenuEnv().length === 0;
 
 const logSecretPreviews = (label = 'Secret previews') => {
   console.log(
@@ -93,7 +102,9 @@ const logSecretPreviews = (label = 'Secret previews') => {
       `${label}:`,
       `APPS_SCRIPT_URL=${previewSecret(process.env.APPS_SCRIPT_URL)}`,
       `APPS_SCRIPT_GET_TOKEN=${previewSecret(process.env.APPS_SCRIPT_GET_TOKEN)}`,
-      `APPS_SCRIPT_POST_TOKEN=${previewSecret(process.env.APPS_SCRIPT_POST_TOKEN)}`
+      `APPS_SCRIPT_POST_TOKEN=${previewSecret(process.env.APPS_SCRIPT_POST_TOKEN)}`,
+      `MENU_SCRIPT_URL=${previewSecret(process.env.MENU_SCRIPT_URL)}`,
+      `MENU_SCRIPT_TOKEN=${previewSecret(process.env.MENU_SCRIPT_TOKEN)}`
     ].join(' ')
   );
 };
@@ -113,6 +124,56 @@ const normalizeCacheRecord = (value) => {
   };
 };
 
+const normalizeMenuCacheRecord = (value) => {
+  if (!value || typeof value !== 'object') {
+    return { ...emptyMenuCacheRecord };
+  }
+
+  const raw = value;
+  const updatedAt = typeof raw.updatedAt === 'string' ? raw.updatedAt : null;
+  const rawPosts = Array.isArray(raw.posts)
+    ? raw.posts
+    : Array.isArray(raw.archives)
+      ? raw.archives
+      : [];
+  const posts = rawPosts
+    .map((entry, index) => normalizeMenuCachePostEntry(entry, index))
+    .filter(Boolean)
+    .slice(0, MENU_CACHE_LIMIT);
+
+  return {
+    updatedAt,
+    posts
+  };
+};
+
+const normalizeMenuCachePostEntry = (entry, index = 0) => {
+  if (!entry || typeof entry !== 'object') return null;
+  const raw = entry;
+  const createdAt =
+    typeof raw.createdAt === 'string' && raw.createdAt.trim()
+      ? raw.createdAt
+      : new Date(Date.now() - index).toISOString();
+  const id =
+    typeof raw.id === 'string' && raw.id.trim()
+      ? raw.id
+      : `${createdAt}-${index}`;
+  const programType = normalizeText(raw.programType);
+  const payload = raw.payload && typeof raw.payload === 'object' ? raw.payload : raw.archive || raw;
+  const appsScriptResponse =
+    raw.appsScriptResponse && typeof raw.appsScriptResponse === 'object'
+      ? raw.appsScriptResponse
+      : null;
+
+  return {
+    id,
+    createdAt,
+    programType: programType || 'Unknown',
+    payload,
+    appsScriptResponse
+  };
+};
+
 const isCacheStale = (cacheRecord) => {
   if (!cacheRecord.updatedAt) return true;
   const updatedAtMs = Date.parse(cacheRecord.updatedAt);
@@ -125,6 +186,18 @@ const ensureCacheFile = async () => {
     await fsPromises.access(cacheFilePath, fs.constants.F_OK);
   } catch {
     await fsPromises.writeFile(cacheFilePath, `${JSON.stringify(emptyCacheRecord, null, 2)}\n`, 'utf8');
+  }
+};
+
+const ensureMenuCacheFile = async () => {
+  try {
+    await fsPromises.access(menuCacheFilePath, fs.constants.F_OK);
+  } catch {
+    await fsPromises.writeFile(
+      menuCacheFilePath,
+      `${JSON.stringify(emptyMenuCacheRecord, null, 2)}\n`,
+      'utf8'
+    );
   }
 };
 
@@ -142,11 +215,36 @@ const readCacheRecord = async () => {
   }
 };
 
+const readMenuCacheRecord = async () => {
+  await ensureMenuCacheFile();
+
+  try {
+    const content = await fsPromises.readFile(menuCacheFilePath, 'utf8');
+    const parsed = JSON.parse(content);
+    return normalizeMenuCacheRecord(parsed);
+  } catch (error) {
+    console.error('Menu cache read failed. Resetting menu cache file.', error);
+    await fsPromises.writeFile(
+      menuCacheFilePath,
+      `${JSON.stringify(emptyMenuCacheRecord, null, 2)}\n`,
+      'utf8'
+    );
+    return { ...emptyMenuCacheRecord };
+  }
+};
+
 const writeCacheRecord = async (record) => {
   const normalized = normalizeCacheRecord(record);
   const tmpPath = `${cacheFilePath}.tmp`;
   await fsPromises.writeFile(tmpPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
   await fsPromises.rename(tmpPath, cacheFilePath);
+};
+
+const writeMenuCacheRecord = async (record) => {
+  const normalized = normalizeMenuCacheRecord(record);
+  const tmpPath = `${menuCacheFilePath}.tmp`;
+  await fsPromises.writeFile(tmpPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
+  await fsPromises.rename(tmpPath, menuCacheFilePath);
 };
 
 const parseJsonSafely = (value) => {
@@ -756,6 +854,79 @@ const refreshCacheFromAppsScriptSafely = async (reason) => {
   return refreshInFlight;
 };
 
+const buildMenuScriptUrl = (action, params = {}) => {
+  const url = new URL(process.env.MENU_SCRIPT_URL);
+  if (action) {
+    url.searchParams.set('action', action);
+  }
+  if (process.env.MENU_SCRIPT_TOKEN) {
+    url.searchParams.set('token', process.env.MENU_SCRIPT_TOKEN);
+  }
+  for (const [key, value] of Object.entries(params)) {
+    if (value === null || value === undefined) continue;
+    const text = String(value).trim();
+    if (!text) continue;
+    url.searchParams.set(key, text);
+  }
+  return url;
+};
+
+const postMenuToAppsScript = async (body) => {
+  const payload = sanitizeForAppsScript(body || {});
+  const hasIncomingToken =
+    payload &&
+    typeof payload === 'object' &&
+    Object.prototype.hasOwnProperty.call(payload, 'token') &&
+    normalizeText(payload.token).length > 0;
+
+  if (process.env.MENU_SCRIPT_TOKEN && !hasIncomingToken) {
+    payload.token = process.env.MENU_SCRIPT_TOKEN;
+  }
+
+  const postUrl = buildMenuScriptUrl('');
+  if (process.env.MENU_SCRIPT_TOKEN && !postUrl.searchParams.get('token')) {
+    postUrl.searchParams.set('token', process.env.MENU_SCRIPT_TOKEN);
+  }
+
+  const response = await fetch(postUrl.toString(), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const text = await response.text();
+  return {
+    ok: response.ok,
+    status: response.status,
+    text
+  };
+};
+
+const appendMenuPostToCache = async (menuPayload, appsScriptResponse) => {
+  const existing = await readMenuCacheRecord();
+  const normalizedPayload = sanitizeForAppsScript(menuPayload || {});
+  const entry = normalizeMenuCachePostEntry({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    createdAt: new Date().toISOString(),
+    programType:
+      normalizeText(normalizedPayload.programType) ||
+      normalizeText(normalizedPayload.programName) ||
+      'Unknown',
+    payload: normalizedPayload,
+    appsScriptResponse
+  });
+
+  const nextPosts = [entry, ...(existing.posts || [])].slice(0, MENU_CACHE_LIMIT);
+  const nextRecord = {
+    updatedAt: new Date().toISOString(),
+    posts: nextPosts
+  };
+  await writeMenuCacheRecord(nextRecord);
+  return nextRecord;
+};
+
 app.get('/api/bookings', async (_req, res) => {
   if (!hasAllRequiredEnv()) {
     return res
@@ -1038,6 +1209,47 @@ app.post('/api/reservations/delete', async (req, res) => {
   }
 });
 
+app.get('/menu', async (_req, res) => {
+  try {
+    const cacheRecord = await readMenuCacheRecord();
+    res.setHeader('X-Menu-Source', 'menu-cache-file');
+    return res.status(200).json(cacheRecord);
+  } catch (error) {
+    console.error('Menu GET error:', error);
+    return res.status(500).json({ error: 'Failed to load menu cache.' });
+  }
+});
+
+app.post('/menu', async (req, res) => {
+  if (!hasAllMenuEnv()) {
+    return res
+      .status(500)
+      .json({ error: 'Server is missing required menu secrets.', missing: missingMenuEnv() });
+  }
+
+  try {
+    const postResult = await postMenuToAppsScript(req.body || {});
+    if (!postResult.ok) {
+      return res
+        .status(postResult.status || 500)
+        .type('application/json')
+        .send(postResult.text || JSON.stringify({ error: 'Menu write failed.' }));
+    }
+
+    const upstream = parseJsonSafely(postResult.text);
+    const nextMenuCache = await appendMenuPostToCache(req.body || {}, upstream || postResult.text);
+    return res.status(200).json({
+      ok: true,
+      appsScriptResponse: upstream || postResult.text,
+      menuCacheUpdated: true,
+      menuCache: nextMenuCache
+    });
+  } catch (error) {
+    console.error('Menu POST error:', error);
+    return res.status(500).json({ error: 'Failed to submit menu.' });
+  }
+});
+
 if (fs.existsSync(indexHtmlPath)) {
   app.use(express.static(distPath));
   app.get('*', (_req, res) => {
@@ -1052,13 +1264,14 @@ if (fs.existsSync(indexHtmlPath)) {
 const PORT = process.env.PORT || 8080;
 
 logSecretPreviews();
-ensureCacheFile()
+Promise.all([ensureCacheFile(), ensureMenuCacheFile()])
   .then(async () => {
-    if (!hasAllRequiredEnv()) return;
-    void refreshCacheFromAppsScriptSafely('startup');
-    setInterval(() => {
-      void refreshCacheFromAppsScriptSafely('interval');
-    }, backgroundRefreshIntervalMs);
+    if (hasAllRequiredEnv()) {
+      void refreshCacheFromAppsScriptSafely('startup');
+      setInterval(() => {
+        void refreshCacheFromAppsScriptSafely('interval');
+      }, backgroundRefreshIntervalMs);
+    }
   })
   .catch((error) => {
     console.error('Cache initialization failed:', error);

@@ -20,6 +20,11 @@ It proxies browser/app requests to a Google Apps Script web app that reads/write
   Forwards reservation update request to Apps Script and updates local cache on success.
 - `POST /api/reservations/delete`  
   Forwards reservation cancellation request to Apps Script and removes matching entry from local cache on success.
+- `GET /menu`  
+  Returns menu history from local `menu_cache.json` only (no Google Drive read).
+- `POST /menu`  
+  Forwards menu planner JSON payload to the menu Apps Script endpoint, then appends that payload to local `menu_cache.json`.
+  Keeps only the latest 6 menu posts and removes older entries automatically.
 
 If a frontend build exists at `dist/index.html`, this service also serves static files from `dist/` and routes all other paths to `dist/index.html`.
 
@@ -31,6 +36,11 @@ Required environment variables:
   The deployed Apps Script *web app* URL (typically `https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec`).
 - `APPS_SCRIPT_GET_TOKEN`
 - `APPS_SCRIPT_POST_TOKEN`
+
+Required for `/menu` POST endpoint:
+
+- `MENU_SCRIPT_URL`  
+  The deployed menu Apps Script web app URL (typically `https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec`).
 
 Optional:
 
@@ -44,6 +54,8 @@ Optional:
 - `CACHE_BACKGROUND_REFRESH_INTERVAL_SECONDS`  
   Interval for background full refresh from Apps Script to reconcile manual sheet edits/deletes.  
   Default: `300` seconds.
+- `MENU_SCRIPT_TOKEN`  
+  Optional shared token for menu Apps Script POST calls.
 
 At startup the server logs a safe preview of the configured secrets (first 4 chars and last 4 chars).
 
@@ -65,6 +77,23 @@ Notes:
 - Cache stores booking records with `date`, `type`, `time`, `email`, `confirmationNumber`, and `occasion` when available.
 - Cache is also reconciled from Apps Script in the background (startup + interval) so manual Google Sheet edits are reflected.
 
+This service also stores menu post history in `menu_cache.json`:
+
+```json
+{
+  "updatedAt": "2026-03-02T00:00:00.000Z",
+  "posts": [
+    {
+      "id": "1709390000000-abcd1234",
+      "createdAt": "2026-03-02T00:00:00.000Z",
+      "programType": "Satsang",
+      "payload": { "programType": "Satsang", "courses": [] },
+      "appsScriptResponse": { "ok": true }
+    }
+  ]
+}
+```
+
 ## Local Development
 
 Node 20+ recommended.
@@ -75,6 +104,9 @@ PowerShell example:
 $env:APPS_SCRIPT_URL="https://script.google.com/macros/s/XXX/exec"
 $env:APPS_SCRIPT_GET_TOKEN="..."
 $env:APPS_SCRIPT_POST_TOKEN="..."
+$env:MENU_SCRIPT_URL="https://script.google.com/macros/s/YYY/exec"
+# Optional:
+# $env:MENU_SCRIPT_TOKEN="..."
 
 npm install
 npm start
@@ -85,6 +117,7 @@ Quick checks:
 ```powershell
 curl.exe -i http://127.0.0.1:8080/
 curl.exe -i http://127.0.0.1:8080/api/bookings
+curl.exe -i http://127.0.0.1:8080/menu
 ```
 
 ## CORS (Browser Frontend On Another Domain)
@@ -120,7 +153,7 @@ gcloud run deploy $SERVICE `
   --image "$REGION-docker.pkg.dev/$PROJECT/cloud-run-source-deploy/$SERVICE" `
   --region $REGION `
   --allow-unauthenticated `
-  --set-env-vars APPS_SCRIPT_URL=...,APPS_SCRIPT_GET_TOKEN=...,APPS_SCRIPT_POST_TOKEN=...
+  --set-env-vars APPS_SCRIPT_URL=...,APPS_SCRIPT_GET_TOKEN=...,APPS_SCRIPT_POST_TOKEN=...,MENU_SCRIPT_URL=...
 ```
 
 If your Cloud Run service should not be public, remove `--allow-unauthenticated` and call it with an identity token instead.
