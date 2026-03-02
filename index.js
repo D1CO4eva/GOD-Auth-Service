@@ -247,6 +247,27 @@ const writeMenuCacheRecord = async (record) => {
   await fsPromises.rename(tmpPath, menuCacheFilePath);
 };
 
+const resetLocalCaches = async (target) => {
+  const normalizedTarget = normalizeText(target).toLowerCase() || 'all';
+
+  if (normalizedTarget === 'all' || normalizedTarget === 'bookings') {
+    await writeCacheRecord({ ...emptyCacheRecord });
+  }
+  if (normalizedTarget === 'all' || normalizedTarget === 'menu') {
+    await writeMenuCacheRecord({ ...emptyMenuCacheRecord });
+  }
+
+  if (
+    normalizedTarget !== 'all' &&
+    normalizedTarget !== 'bookings' &&
+    normalizedTarget !== 'menu'
+  ) {
+    throw new Error('Invalid cache target. Use one of: all, bookings, menu.');
+  }
+
+  return normalizedTarget;
+};
+
 const parseJsonSafely = (value) => {
   try {
     return JSON.parse(value);
@@ -926,6 +947,26 @@ const appendMenuPostToCache = async (menuPayload, appsScriptResponse) => {
   await writeMenuCacheRecord(nextRecord);
   return nextRecord;
 };
+
+app.post(['/api/cache/reset', '/cache/reset'], async (req, res) => {
+  try {
+    const body = req.body || {};
+    const target = body.target || body.cache || 'all';
+    const appliedTarget = await resetLocalCaches(target);
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Cache reset completed.',
+      target: appliedTarget
+    });
+  } catch (error) {
+    console.error('Cache reset error:', error);
+    return res.status(400).json({
+      ok: false,
+      error: error && error.message ? error.message : 'Failed to reset cache.'
+    });
+  }
+});
 
 app.get('/api/bookings', async (_req, res) => {
   if (!hasAllRequiredEnv()) {

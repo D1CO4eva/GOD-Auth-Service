@@ -20,6 +20,9 @@ It proxies browser/app requests to a Google Apps Script web app that reads/write
   Forwards reservation update request to Apps Script and updates local cache on success.
 - `POST /api/reservations/delete`  
   Forwards reservation cancellation request to Apps Script and removes matching entry from local cache on success.
+- `POST /api/cache/reset` (alias: `POST /cache/reset`)  
+  Manually clears local cache files.  
+  Optional JSON body: `{"target":"all"}` (default), `{"target":"bookings"}`, or `{"target":"menu"}`.
 - `GET /menu`  
   Returns menu history from local `menu_cache.json` only (no Google Drive read).
 - `POST /menu`  
