@@ -154,24 +154,63 @@ const normalizeMenuCachePostEntry = (entry, index = 0) => {
     typeof raw.createdAt === 'string' && raw.createdAt.trim()
       ? raw.createdAt
       : new Date(Date.now() - index).toISOString();
-  const id =
-    typeof raw.id === 'string' && raw.id.trim()
-      ? raw.id
-      : `${createdAt}-${index}`;
-  const programType = normalizeText(raw.programType);
-  const payload = raw.payload && typeof raw.payload === 'object' ? raw.payload : raw.archive || raw;
-  const appsScriptResponse =
-    raw.appsScriptResponse && typeof raw.appsScriptResponse === 'object'
-      ? raw.appsScriptResponse
-      : null;
+  const foods = extractFoodItemsFromEntry_(raw);
+  if (foods.length === 0) return null;
 
   return {
-    id,
     createdAt,
-    programType: programType || 'Unknown',
-    payload,
-    appsScriptResponse
+    foods
   };
+};
+
+const extractFoodItemsFromEntry_ = (entry) => {
+  if (!entry || typeof entry !== 'object') return [];
+  const directFoods = Array.isArray(entry.foods)
+    ? entry.foods
+    : Array.isArray(entry.items)
+      ? entry.items
+      : null;
+  if (directFoods) {
+    return dedupeFoodNames_(directFoods.map((item) => normalizeText(item)));
+  }
+
+  const payload = entry.payload && typeof entry.payload === 'object'
+    ? entry.payload
+    : entry.archive && typeof entry.archive === 'object'
+      ? entry.archive
+      : entry;
+
+  return extractFoodItemsFromMenuPayload_(payload);
+};
+
+const extractFoodItemsFromMenuPayload_ = (payload) => {
+  if (!payload || typeof payload !== 'object') return [];
+  const courses = Array.isArray(payload.courses) ? payload.courses : [];
+  const names = [];
+
+  for (const course of courses) {
+    const items = Array.isArray(course && course.items) ? course.items : [];
+    for (const item of items) {
+      const name = normalizeText(item && item.name);
+      if (name) names.push(name);
+    }
+  }
+
+  return dedupeFoodNames_(names);
+};
+
+const dedupeFoodNames_ = (items) => {
+  const seen = new Set();
+  const next = [];
+  for (const raw of items) {
+    const name = normalizeText(raw);
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push(name);
+  }
+  return next;
 };
 
 const isCacheStale = (cacheRecord) => {
@@ -221,7 +260,14 @@ const readMenuCacheRecord = async () => {
   try {
     const content = await fsPromises.readFile(menuCacheFilePath, 'utf8');
     const parsed = JSON.parse(content);
-    return normalizeMenuCacheRecord(parsed);
+    const normalized = normalizeMenuCacheRecord(parsed);
+
+    // Self-heal legacy or oversized cache files by rewriting normalized structure.
+    if (JSON.stringify(parsed) !== JSON.stringify(normalized)) {
+      await writeMenuCacheRecord(normalized);
+    }
+
+    return normalized;
   } catch (error) {
     console.error('Menu cache read failed. Resetting menu cache file.', error);
     await fsPromises.writeFile(
@@ -925,18 +971,16 @@ const postMenuToAppsScript = async (body) => {
   };
 };
 
-const appendMenuPostToCache = async (menuPayload, appsScriptResponse) => {
+const appendMenuPostToCache = async (menuPayload, _appsScriptResponse) => {
   const existing = await readMenuCacheRecord();
-  const normalizedPayload = sanitizeForAppsScript(menuPayload || {});
+  const foods = extractFoodItemsFromMenuPayload_(menuPayload || {});
+  if (foods.length === 0) {
+    throw new Error('No menu food items found in payload.courses[].items[].name.');
+  }
+
   const entry = normalizeMenuCachePostEntry({
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     createdAt: new Date().toISOString(),
-    programType:
-      normalizeText(normalizedPayload.programType) ||
-      normalizeText(normalizedPayload.programName) ||
-      'Unknown',
-    payload: normalizedPayload,
-    appsScriptResponse
+    foods
   });
 
   const nextPosts = [entry, ...(existing.posts || [])].slice(0, MENU_CACHE_LIMIT);

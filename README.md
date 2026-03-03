@@ -28,6 +28,7 @@ It proxies browser/app requests to a Google Apps Script web app that reads/write
 - `POST /menu`  
   Forwards menu planner JSON payload to the menu Apps Script endpoint, then appends that payload to local `menu_cache.json`.
   Keeps only the latest 6 menu posts and removes older entries automatically.
+  Cache stores only food item names from `courses[].items[].name`.
 
 If a frontend build exists at `dist/index.html`, this service also serves static files from `dist/` and routes all other paths to `dist/index.html`.
 
@@ -87,11 +88,8 @@ This service also stores menu post history in `menu_cache.json`:
   "updatedAt": "2026-03-02T00:00:00.000Z",
   "posts": [
     {
-      "id": "1709390000000-abcd1234",
       "createdAt": "2026-03-02T00:00:00.000Z",
-      "programType": "Satsang",
-      "payload": { "programType": "Satsang", "courses": [] },
-      "appsScriptResponse": { "ok": true }
+      "foods": ["Sambar Rice", "Curd Rice", "Kesari"]
     }
   ]
 }
