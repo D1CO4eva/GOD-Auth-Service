@@ -23,6 +23,8 @@ It proxies browser/app requests to a Google Apps Script web app that reads/write
 - `POST /api/cache/reset` (alias: `POST /cache/reset`)  
   Manually clears local cache files.  
   Optional JSON body: `{"target":"all"}` (default), `{"target":"bookings"}`, or `{"target":"menu"}`.
+- `POST /generate` (alias: `POST /api/generate`)  
+  Proxies LLM generation calls to OpenRouter using server-side secret `OPENROUTER_API_KEY`.
 - `GET /menu`  
   Returns menu history from local `menu_cache.json` only (no Google Drive read).
 - `POST /menu`  
@@ -45,6 +47,11 @@ Required for `/menu` POST endpoint:
 
 - `MENU_SCRIPT_URL`  
   The deployed menu Apps Script web app URL (typically `https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec`).
+
+Required for `/generate` endpoint:
+
+- `OPENROUTER_API_KEY`  
+  OpenRouter API key used server-side for menu generation requests.
 
 Optional:
 
@@ -108,6 +115,7 @@ $env:APPS_SCRIPT_POST_TOKEN="..."
 $env:MENU_SCRIPT_URL="https://script.google.com/macros/s/YYY/exec"
 # Optional:
 # $env:MENU_SCRIPT_TOKEN="..."
+# $env:OPENROUTER_API_KEY="..."
 
 npm install
 npm start
@@ -119,6 +127,7 @@ Quick checks:
 curl.exe -i http://127.0.0.1:8080/
 curl.exe -i http://127.0.0.1:8080/api/bookings
 curl.exe -i http://127.0.0.1:8080/menu
+curl.exe -i -X POST http://127.0.0.1:8080/generate -H "Content-Type: application/json" -d "{\"messages\":[{\"role\":\"user\",\"content\":\"Return JSON only.\"}]}"
 ```
 
 ## CORS (Browser Frontend On Another Domain)
@@ -154,7 +163,7 @@ gcloud run deploy $SERVICE `
   --image "$REGION-docker.pkg.dev/$PROJECT/cloud-run-source-deploy/$SERVICE" `
   --region $REGION `
   --allow-unauthenticated `
-  --set-env-vars APPS_SCRIPT_URL=...,APPS_SCRIPT_GET_TOKEN=...,APPS_SCRIPT_POST_TOKEN=...,MENU_SCRIPT_URL=...
+  --set-env-vars APPS_SCRIPT_URL=...,APPS_SCRIPT_GET_TOKEN=...,APPS_SCRIPT_POST_TOKEN=...,MENU_SCRIPT_URL=...,OPENROUTER_API_KEY=...
 ```
 
 If your Cloud Run service should not be public, remove `--allow-unauthenticated` and call it with an identity token instead.

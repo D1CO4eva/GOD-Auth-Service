@@ -83,6 +83,8 @@ const REQUIRED_ENV_KEYS = [
   'APPS_SCRIPT_POST_TOKEN'
 ];
 const MENU_REQUIRED_ENV_KEYS = ['MENU_SCRIPT_URL'];
+const OPENROUTER_REQUIRED_ENV_KEYS = ['OPENROUTER_API_KEY'];
+const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 const previewSecret = (value) => {
   if (!value) return '(missing)';
@@ -95,6 +97,8 @@ const missingRequiredEnv = () => REQUIRED_ENV_KEYS.filter((k) => !process.env[k]
 const hasAllRequiredEnv = () => missingRequiredEnv().length === 0;
 const missingMenuEnv = () => MENU_REQUIRED_ENV_KEYS.filter((k) => !process.env[k]);
 const hasAllMenuEnv = () => missingMenuEnv().length === 0;
+const missingOpenRouterEnv = () => OPENROUTER_REQUIRED_ENV_KEYS.filter((k) => !process.env[k]);
+const hasAllOpenRouterEnv = () => missingOpenRouterEnv().length === 0;
 
 const logSecretPreviews = (label = 'Secret previews') => {
   console.log(
@@ -104,7 +108,8 @@ const logSecretPreviews = (label = 'Secret previews') => {
       `APPS_SCRIPT_GET_TOKEN=${previewSecret(process.env.APPS_SCRIPT_GET_TOKEN)}`,
       `APPS_SCRIPT_POST_TOKEN=${previewSecret(process.env.APPS_SCRIPT_POST_TOKEN)}`,
       `MENU_SCRIPT_URL=${previewSecret(process.env.MENU_SCRIPT_URL)}`,
-      `MENU_SCRIPT_TOKEN=${previewSecret(process.env.MENU_SCRIPT_TOKEN)}`
+      `MENU_SCRIPT_TOKEN=${previewSecret(process.env.MENU_SCRIPT_TOKEN)}`,
+      `OPENROUTER_API_KEY=${previewSecret(process.env.OPENROUTER_API_KEY)}`
     ].join(' ')
   );
 };
@@ -971,6 +976,61 @@ const postMenuToAppsScript = async (body) => {
   };
 };
 
+const buildGenerateRequestPayload = (body) => {
+  const raw = body && typeof body === 'object' ? body : {};
+  const messages = Array.isArray(raw.messages) ? raw.messages : [];
+  const payload = {
+    model: normalizeText(raw.model) || 'openai/gpt-4o-mini',
+    messages
+  };
+
+  if (typeof raw.temperature === 'number' && Number.isFinite(raw.temperature)) {
+    payload.temperature = raw.temperature;
+  }
+  if (typeof raw.max_tokens === 'number' && Number.isFinite(raw.max_tokens)) {
+    payload.max_tokens = Math.max(1, Math.floor(raw.max_tokens));
+  }
+  if (
+    raw.response_format &&
+    typeof raw.response_format === 'object' &&
+    !Array.isArray(raw.response_format)
+  ) {
+    payload.response_format = raw.response_format;
+  }
+  if (typeof raw.top_p === 'number' && Number.isFinite(raw.top_p)) {
+    payload.top_p = raw.top_p;
+  }
+  if (typeof raw.presence_penalty === 'number' && Number.isFinite(raw.presence_penalty)) {
+    payload.presence_penalty = raw.presence_penalty;
+  }
+  if (typeof raw.frequency_penalty === 'number' && Number.isFinite(raw.frequency_penalty)) {
+    payload.frequency_penalty = raw.frequency_penalty;
+  }
+
+  return payload;
+};
+
+const generateWithOpenRouter = async (payload, requestOrigin) => {
+  const origin = normalizeText(requestOrigin) || 'https://atlanta.godivinity.org';
+  const response = await fetch(OPENROUTER_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      'HTTP-Referer': origin,
+      'X-Title': 'GOD Menu Planner'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const text = await response.text();
+  return {
+    ok: response.ok,
+    status: response.status,
+    text
+  };
+};
+
 const appendMenuPostToCache = async (menuPayload, _appsScriptResponse) => {
   const existing = await readMenuCacheRecord();
   const foods = extractFoodItemsFromMenuPayload_(menuPayload || {});
@@ -1009,6 +1069,28 @@ app.post(['/api/cache/reset', '/cache/reset'], async (req, res) => {
       ok: false,
       error: error && error.message ? error.message : 'Failed to reset cache.'
     });
+  }
+});
+
+app.post(['/generate', '/api/generate'], async (req, res) => {
+  if (!hasAllOpenRouterEnv()) {
+    return res.status(500).json({
+      error: 'Server is missing required OpenRouter secrets.',
+      missing: missingOpenRouterEnv()
+    });
+  }
+
+  try {
+    const payload = buildGenerateRequestPayload(req.body || {});
+    if (!Array.isArray(payload.messages) || payload.messages.length === 0) {
+      return res.status(400).json({ error: 'Request body must include a non-empty messages array.' });
+    }
+
+    const result = await generateWithOpenRouter(payload, req.headers.origin);
+    return res.status(result.status || (result.ok ? 200 : 500)).type('application/json').send(result.text);
+  } catch (error) {
+    console.error('Generate route error:', error);
+    return res.status(500).json({ error: 'Failed to generate menu.' });
   }
 });
 
