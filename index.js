@@ -372,6 +372,21 @@ const normalizeEmail = (value) => normalizeMaybeUnknown(value, 'N/A');
 const normalizeConfirmation = (value) => normalizeMaybeUnknown(value, 'N/A');
 const normalizeOccasion = (value) => normalizeText(value);
 const isKnownValue = (value) => normalizeMaybeUnknown(value, 'N/A') !== 'N/A';
+const findObjectValueByKeyHint = (obj, hints) => {
+  if (!obj || typeof obj !== 'object') return undefined;
+  const loweredHints = hints.map((hint) => normalizeText(hint).toLowerCase()).filter(Boolean);
+  if (!loweredHints.length) return undefined;
+
+  for (const [rawKey, rawValue] of Object.entries(obj)) {
+    const key = normalizeText(rawKey).toLowerCase();
+    if (!key) continue;
+    if (loweredHints.some((hint) => key.includes(hint))) {
+      return rawValue;
+    }
+  }
+
+  return undefined;
+};
 const bookingKey = (item) => {
   const date = normalizeDateString(item?.date) || '';
   const type = normalizeProgramTypeForMatch(item?.type);
@@ -483,7 +498,15 @@ const extractBookingsFromRow = (
       obj.confirmation ||
       obj.Confirmation ||
       obj['Confirmation Number'] ||
-      obj['confirmation number'];
+      obj['confirmation number'] ||
+      findObjectValueByKeyHint(obj, [
+        'confirmation',
+        'confirm',
+        'reservation number',
+        'reservation id',
+        'reference number',
+        'reference id'
+      ]);
     const rawOccasion =
       obj.occasion ||
       obj.Occasion ||
@@ -551,7 +574,11 @@ const extractBookings = (data) => {
       cell.includes('host email') || cell === 'email' || cell.includes('email')
     );
     confirmationCol = headerStrings.findIndex((cell) =>
-      cell.includes('confirmation number') || cell.includes('confirmation')
+      cell.includes('confirmation number') ||
+      cell.includes('confirmation') ||
+      cell.includes('confirm') ||
+      cell.includes('reservation') ||
+      cell.includes('reference')
     );
     occasionCol = headerStrings.findIndex((cell) => cell.includes('occasion'));
   }
