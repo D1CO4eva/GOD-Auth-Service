@@ -327,37 +327,6 @@ const parseJsonSafely = (value) => {
   }
 };
 
-const looksLikeHtmlDocument = (value) => {
-  if (typeof value !== 'string') return false;
-  const text = value.trim().toLowerCase();
-  return text.startsWith('<!doctype html') || text.startsWith('<html');
-};
-
-const isDoGetMissingMessage = (value) =>
-  typeof value === 'string' && /script function not found:\s*doget/i.test(value);
-
-const buildUpstreamPayloadError = (rawText) => {
-  const baseError = {
-    error: 'Apps Script returned a non-JSON payload for bookings.'
-  };
-
-  if (isDoGetMissingMessage(rawText)) {
-    return {
-      ...baseError,
-      hint: 'The APPS_SCRIPT_URL target does not expose doGet(). Use the bookings web app /exec URL or restore doGet().'
-    };
-  }
-
-  if (looksLikeHtmlDocument(rawText)) {
-    return {
-      ...baseError,
-      hint: 'Received HTML instead of JSON. Verify APPS_SCRIPT_URL points to the bookings web app endpoint.'
-    };
-  }
-
-  return baseError;
-};
-
 const normalizeDateString = (value) => {
   if (value === null || value === undefined) return null;
   const text = String(value).trim();
@@ -895,10 +864,13 @@ const refreshCacheFromAppsScript = async () => {
 
   const parsed = parseJsonSafely(result.text);
   if (parsed === null) {
+    await writeCacheRecord({
+      updatedAt: new Date().toISOString(),
+      payload: result.text
+    });
     return {
-      ok: false,
-      status: 502,
-      text: JSON.stringify(buildUpstreamPayloadError(result.text))
+      ...result,
+      text: result.text
     };
   }
 
@@ -1123,11 +1095,48 @@ app.post(['/generate', '/api/generate'], async (req, res) => {
 });
 
 app.get('/api/bookings', async (_req, res) => {
+  if (!hasAllRequiredEnv()) {
+    return res
+      .status(500)
+      .json({ error: 'Server is missing required secrets.', missing: missingRequiredEnv() });
+  }
+
   try {
     const cacheRecord = await readCacheRecord();
-    const payload = cacheRecord.payload || JSON.stringify({ bookings: [] });
-    res.setHeader('X-Bookings-Source', 'cache-file');
-    return res.status(200).type('application/json').send(payload);
+    if (cacheRecord.payload) {
+      const parsedCachedPayload = parseJsonSafely(cacheRecord.payload);
+      if (parsedCachedPayload !== null) {
+        const normalizedPayload = toCanonicalPayload(extractBookings(parsedCachedPayload));
+        if (normalizedPayload !== cacheRecord.payload) {
+          await writeCacheRecord({
+            updatedAt: cacheRecord.updatedAt || new Date().toISOString(),
+            payload: normalizedPayload
+          });
+        }
+        if (isCacheStale(cacheRecord)) {
+          void refreshCacheFromAppsScriptSafely('stale-get');
+        }
+        res.setHeader('X-Bookings-Source', 'cache-file');
+        return res.status(200).type('application/json').send(normalizedPayload);
+      }
+
+      if (isCacheStale(cacheRecord)) {
+        void refreshCacheFromAppsScriptSafely('stale-get');
+      }
+      res.setHeader('X-Bookings-Source', 'cache-file');
+      return res.status(200).type('application/json').send(cacheRecord.payload);
+    }
+
+    const refreshResult = await refreshCacheFromAppsScriptSafely('cache-empty-get');
+    if (refreshResult?.ok) {
+      res.setHeader('X-Bookings-Source', 'apps-script');
+      return res.status(200).type('application/json').send(refreshResult.text);
+    }
+
+    res
+      .status(refreshResult?.status || 500)
+      .type('application/json')
+      .send(refreshResult?.text || JSON.stringify({ error: 'Failed to load bookings.' }));
   } catch (error) {
     console.error('Read error:', error);
     res.status(500).json({ error: 'Failed to load bookings.' });
@@ -1423,7 +1432,14 @@ const PORT = process.env.PORT || 8080;
 
 logSecretPreviews();
 Promise.all([ensureCacheFile(), ensureMenuCacheFile()])
-  .then(() => {})
+  .then(async () => {
+    if (hasAllRequiredEnv()) {
+      void refreshCacheFromAppsScriptSafely('startup');
+      setInterval(() => {
+        void refreshCacheFromAppsScriptSafely('interval');
+      }, backgroundRefreshIntervalMs);
+    }
+  })
   .catch((error) => {
     console.error('Cache initialization failed:', error);
   });
