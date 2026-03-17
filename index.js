@@ -970,7 +970,8 @@ const refreshCacheFromAppsScript = async () => {
     });
     return {
       ...result,
-      text: result.text
+      text: result.text,
+      rawText: result.text
     };
   }
 
@@ -997,7 +998,8 @@ const refreshCacheFromAppsScript = async () => {
 
   return {
     ...result,
-    text: canonicalPayload
+    text: canonicalPayload,
+    rawText: result.text
   };
 };
 
@@ -1270,15 +1272,85 @@ const buildBookingsPayloadDiagnostics = (payloadText) => {
   const knownConfirmationCount = extracted.filter((item) =>
     isKnownValue(item.confirmationNumber)
   ).length;
+  const firstRowKeys =
+    firstRow && typeof firstRow === 'object' && !Array.isArray(firstRow)
+      ? Object.keys(firstRow).slice(0, 30)
+      : [];
+  let rawEmailValueCount = 0;
+  let rawConfirmationValueCount = 0;
+  if (rows.length > 0 && Array.isArray(firstRow)) {
+    const headerStrings = firstRow.map((cell) => normalizeText(cell).toLowerCase());
+    const emailIndexes = [];
+    const confirmationIndexes = [];
+    for (let i = 0; i < headerStrings.length; i += 1) {
+      const header = headerStrings[i];
+      if (!header) continue;
+      if (header.includes('email')) emailIndexes.push(i);
+      if (
+        header.includes('confirmation') ||
+        header.includes('conformation') ||
+        header.includes('confirm') ||
+        header.includes('reservation') ||
+        header.includes('reference')
+      ) {
+        confirmationIndexes.push(i);
+      }
+    }
+
+    for (let i = 1; i < rows.length; i += 1) {
+      const row = rows[i];
+      if (!Array.isArray(row)) continue;
+      if (emailIndexes.some((col) => col < row.length && isKnownValue(row[col]))) rawEmailValueCount += 1;
+      if (
+        confirmationIndexes.some((col) => col < row.length && isKnownValue(row[col]))
+      ) {
+        rawConfirmationValueCount += 1;
+      }
+    }
+  } else {
+    const emailValues = [];
+    const confirmationValues = [];
+    for (const row of rows) {
+      if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+      emailValues.push(
+        ...findObjectValuesByKeyHints(row, ['email'], {
+          excludeHints: ['current', 'new']
+        })
+      );
+      confirmationValues.push(
+        ...findObjectValuesByKeyHints(
+          row,
+          [
+            'confirmation',
+            'conformation',
+            'confirm',
+            'reservation number',
+            'reservation id',
+            'booking id',
+            'reference number',
+            'reference id',
+            'ref number',
+            'ref id'
+          ],
+          { excludeHints: ['current', 'new'] }
+        )
+      );
+    }
+    rawEmailValueCount = emailValues.filter((value) => isKnownValue(value)).length;
+    rawConfirmationValueCount = confirmationValues.filter((value) => isKnownValue(value)).length;
+  }
 
   return {
     format: 'json',
     rootType,
     rowCount: rows.length,
     firstRowType: Array.isArray(firstRow) ? 'array' : typeof firstRow,
+    firstRowKeys,
     extractedCount: extracted.length,
     knownEmailCount,
-    knownConfirmationCount
+    knownConfirmationCount,
+    rawEmailValueCount,
+    rawConfirmationValueCount
   };
 };
 
@@ -1300,7 +1372,7 @@ const handleBookingsRefresh = async (_req, res) => {
 
     const parsed = parseJsonSafely(refreshResult.text);
     const bookingsCount = Array.isArray(parsed?.bookings) ? parsed.bookings.length : null;
-    const diagnostics = buildBookingsPayloadDiagnostics(refreshResult.text);
+    const diagnostics = buildBookingsPayloadDiagnostics(refreshResult.rawText || refreshResult.text);
     return res.status(200).json({
       ok: true,
       message: 'Bookings cache refreshed from Google Sheets.',
