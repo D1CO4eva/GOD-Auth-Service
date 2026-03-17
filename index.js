@@ -435,16 +435,30 @@ const extractBookingsFromRow = (
   dateCol,
   programCol,
   timeCol,
-  emailCol,
-  confirmationCol,
+  emailCols,
+  confirmationCols,
   occasionCol
 ) => {
   if (Array.isArray(row)) {
+    const pickPreferredCellValue = (candidateCols) => {
+      const validCandidates = Array.isArray(candidateCols)
+        ? candidateCols.filter((col) => Number.isInteger(col) && col >= 0 && col < row.length)
+        : [];
+      if (!validCandidates.length) return '';
+
+      // Prefer an actual value over blank/N/A when multiple matching headers exist.
+      for (const col of validCandidates) {
+        const value = row[col];
+        if (isKnownValue(value)) return value;
+      }
+      return row[validCandidates[0]];
+    };
+
     const rawDate = dateCol >= 0 ? row[dateCol] : row[0];
     const rawType = programCol >= 0 ? row[programCol] : '';
     const rawTime = timeCol >= 0 ? row[timeCol] : '';
-    const rawEmail = emailCol >= 0 ? row[emailCol] : '';
-    const rawConfirmation = confirmationCol >= 0 ? row[confirmationCol] : '';
+    const rawEmail = pickPreferredCellValue(emailCols);
+    const rawConfirmation = pickPreferredCellValue(confirmationCols);
     const rawOccasion = occasionCol >= 0 ? row[occasionCol] : '';
     const date = normalizeDateString(rawDate);
     if (!date) return [];
@@ -556,8 +570,8 @@ const extractBookings = (data) => {
   let dateCol = -1;
   let programCol = -1;
   let timeCol = -1;
-  let emailCol = -1;
-  let confirmationCol = -1;
+  let emailCols = [];
+  let confirmationCols = [];
   let occasionCol = -1;
 
   if (headerRow) {
@@ -570,16 +584,39 @@ const extractBookings = (data) => {
       (cell) => cell.includes('type of program') || cell.includes('program type') || cell.includes('program')
     );
     timeCol = headerStrings.findIndex((cell) => cell.includes('time'));
-    emailCol = headerStrings.findIndex((cell) =>
-      cell.includes('host email') || cell === 'email' || cell.includes('email')
-    );
-    confirmationCol = headerStrings.findIndex((cell) =>
-      cell.includes('confirmation number') ||
-      cell.includes('confirmation') ||
-      cell.includes('confirm') ||
-      cell.includes('reservation') ||
-      cell.includes('reference')
-    );
+    const appendHeaderIndexes = (matcher) => {
+      const indexes = [];
+      for (let i = 0; i < headerStrings.length; i += 1) {
+        if (matcher(headerStrings[i])) indexes.push(i);
+      }
+      return indexes;
+    };
+    const uniqueIndexes = (indexes) => [...new Set(indexes)].filter((index) => index >= 0);
+    emailCols = uniqueIndexes([
+      ...appendHeaderIndexes(
+        (cell) =>
+          (cell.includes('host email') || cell === 'email' || cell.includes('email address')) &&
+          !cell.includes('current')
+      ),
+      ...appendHeaderIndexes((cell) => cell.includes('email') && !cell.includes('current')),
+      ...appendHeaderIndexes((cell) => cell.includes('email'))
+    ]);
+    confirmationCols = uniqueIndexes([
+      ...appendHeaderIndexes(
+        (cell) =>
+          cell.includes('confirmation number') && !cell.includes('current') && !cell.includes('new')
+      ),
+      ...appendHeaderIndexes(
+        (cell) => cell.includes('confirmation') && !cell.includes('current') && !cell.includes('new')
+      ),
+      ...appendHeaderIndexes(
+        (cell) =>
+          (cell.includes('confirm') || cell.includes('reservation') || cell.includes('reference')) &&
+          !cell.includes('current') &&
+          !cell.includes('new')
+      ),
+      ...appendHeaderIndexes((cell) => cell.includes('confirmation') || cell.includes('confirm'))
+    ]);
     occasionCol = headerStrings.findIndex((cell) => cell.includes('occasion'));
   }
 
@@ -591,8 +628,8 @@ const extractBookings = (data) => {
         dateCol,
         programCol,
         timeCol,
-        emailCol,
-        confirmationCol,
+        emailCols,
+        confirmationCols,
         occasionCol
       )
     );
