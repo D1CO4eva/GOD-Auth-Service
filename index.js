@@ -372,6 +372,49 @@ const normalizeEmail = (value) => normalizeMaybeUnknown(value, 'N/A');
 const normalizeConfirmation = (value) => normalizeMaybeUnknown(value, 'N/A');
 const normalizeOccasion = (value) => normalizeText(value);
 const isKnownValue = (value) => normalizeMaybeUnknown(value, 'N/A') !== 'N/A';
+const isInternalCommentsFieldKey = (value) => {
+  const key = normalizeText(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return key === 'internal comments' || key === 'internal comment';
+};
+const toCamelCaseKey = (value) => {
+  const key = normalizeText(value)
+    .replace(/[^a-zA-Z0-9]+/g, ' ')
+    .trim();
+  if (!key) return '';
+  const parts = key.split(/\s+/).filter(Boolean);
+  if (!parts.length) return '';
+  return parts
+    .map((part, index) =>
+      index === 0
+        ? part.charAt(0).toLowerCase() + part.slice(1)
+        : part.charAt(0).toUpperCase() + part.slice(1)
+    )
+    .join('');
+};
+const flattenObjectToFieldMap = (value, prefix = '', out = {}) => {
+  if (value === null || value === undefined) {
+    if (prefix) out[prefix] = '';
+    return out;
+  }
+
+  if (Array.isArray(value)) {
+    if (prefix) out[prefix] = value.map((item) => normalizeText(item)).join(', ');
+    return out;
+  }
+
+  if (typeof value !== 'object') {
+    if (prefix) out[prefix] = value;
+    return out;
+  }
+
+  for (const [rawKey, child] of Object.entries(value)) {
+    const key = normalizeText(rawKey);
+    if (!key) continue;
+    const nextPrefix = prefix ? `${prefix} ${key}` : key;
+    flattenObjectToFieldMap(child, nextPrefix, out);
+  }
+  return out;
+};
 const findObjectValuesByKeyHints = (obj, hints, options = {}) => {
   if (!obj || typeof obj !== 'object') return [];
   const loweredHints = hints.map((hint) => normalizeText(hint).toLowerCase()).filter(Boolean);
@@ -396,12 +439,44 @@ const findObjectValuesByKeyHints = (obj, hints, options = {}) => {
 
   return [...preferredMatches, ...fallbackMatches];
 };
+const collectValuesByFieldHints = (fieldMap, hints, options = {}) => {
+  const loweredHints = hints.map((hint) => normalizeText(hint).toLowerCase()).filter(Boolean);
+  const excludeHints = (options.excludeHints || [])
+    .map((hint) => normalizeText(hint).toLowerCase())
+    .filter(Boolean);
+  if (!loweredHints.length) return [];
+
+  const preferred = [];
+  const fallback = [];
+  for (const [rawKey, rawValue] of Object.entries(fieldMap || {})) {
+    const key = normalizeText(rawKey).toLowerCase();
+    if (!key) continue;
+    if (!loweredHints.some((hint) => key.includes(hint))) continue;
+    if (excludeHints.some((hint) => key.includes(hint))) {
+      fallback.push(rawValue);
+      continue;
+    }
+    preferred.push(rawValue);
+  }
+
+  return [...preferred, ...fallback];
+};
 const pickPreferredKnownValue = (values) => {
   const list = Array.isArray(values) ? values : [];
   for (const value of list) {
     if (isKnownValue(value)) return value;
   }
   return list.find((value) => value !== undefined && value !== null) ?? '';
+};
+const buildPublicBookingFields = (fieldMap) => {
+  const next = {};
+  for (const [rawKey, rawValue] of Object.entries(fieldMap || {})) {
+    if (isInternalCommentsFieldKey(rawKey)) continue;
+    const key = toCamelCaseKey(rawKey);
+    if (!key) continue;
+    next[key] = normalizeText(rawValue);
+  }
+  return next;
 };
 const bookingKey = (item) => {
   const date = normalizeDateString(item?.date) || '';
@@ -456,6 +531,35 @@ const extractBookingsFromRow = (
   occasionCol
 ) => {
   if (Array.isArray(row)) {
+    const headerRow = Array.isArray(dateCol) ? dateCol : null;
+    const resolvedDateCol = Array.isArray(dateCol)
+      ? headerRow.findIndex((cell) => String(cell).toLowerCase().includes('date'))
+      : dateCol;
+    const resolvedProgramCol =
+      typeof programCol === 'number'
+        ? programCol
+        : headerRow
+          ? headerRow.findIndex((cell) => {
+              const text = String(cell).toLowerCase();
+              return (
+                text.includes('type of program') ||
+                text.includes('program type') ||
+                text.includes('program')
+              );
+            })
+          : -1;
+    const resolvedTimeCol =
+      typeof timeCol === 'number'
+        ? timeCol
+        : headerRow
+          ? headerRow.findIndex((cell) => String(cell).toLowerCase().includes('time'))
+          : -1;
+    const resolvedOccasionCol =
+      typeof occasionCol === 'number'
+        ? occasionCol
+        : headerRow
+          ? headerRow.findIndex((cell) => String(cell).toLowerCase().includes('occasion'))
+          : -1;
     const pickPreferredCellValue = (candidateCols) => {
       const validCandidates = Array.isArray(candidateCols)
         ? candidateCols.filter((col) => Number.isInteger(col) && col >= 0 && col < row.length)
@@ -470,15 +574,26 @@ const extractBookingsFromRow = (
       return row[validCandidates[0]];
     };
 
-    const rawDate = dateCol >= 0 ? row[dateCol] : row[0];
-    const rawType = programCol >= 0 ? row[programCol] : '';
-    const rawTime = timeCol >= 0 ? row[timeCol] : '';
+    const fieldMap = {};
+    if (headerRow) {
+      for (let i = 0; i < headerRow.length; i += 1) {
+        const header = normalizeText(headerRow[i]);
+        if (!header) continue;
+        fieldMap[header] = row[i];
+      }
+    }
+
+    const rawDate = resolvedDateCol >= 0 ? row[resolvedDateCol] : row[0];
+    const rawType = resolvedProgramCol >= 0 ? row[resolvedProgramCol] : '';
+    const rawTime = resolvedTimeCol >= 0 ? row[resolvedTimeCol] : '';
     const rawEmail = pickPreferredCellValue(emailCols);
     const rawConfirmation = pickPreferredCellValue(confirmationCols);
-    const rawOccasion = occasionCol >= 0 ? row[occasionCol] : '';
+    const rawOccasion = resolvedOccasionCol >= 0 ? row[resolvedOccasionCol] : '';
     const date = normalizeDateString(rawDate);
     if (!date) return [];
+    const publicFields = buildPublicBookingFields(fieldMap);
     return [{
+      ...publicFields,
       date,
       type: normalizeText(rawType),
       time: normalizeText(rawTime),
@@ -490,52 +605,58 @@ const extractBookingsFromRow = (
 
   if (row && typeof row === 'object') {
     const obj = row;
+    const fieldMap = flattenObjectToFieldMap(obj);
     const rawDate = pickPreferredKnownValue([
+      ...collectValuesByFieldHints(fieldMap, [
+        'date of program',
+        'program date',
+        'date'
+      ], { excludeHints: ['updated'] }),
       obj.date,
-      obj.Date,
-      obj.programDate,
-      obj.program_date,
-      obj['Program Date'],
-      obj['Date of Program'],
-      obj['Date of Program (YYYY-MM-DD)']
+      obj.Date
     ]);
     const rawType = pickPreferredKnownValue([
+      ...collectValuesByFieldHints(fieldMap, [
+        'type of program',
+        'program type',
+        'program'
+      ]),
       obj.type,
-      obj.Type,
-      obj.programType,
-      obj.program_type,
-      obj['Type of Program'],
-      obj['Program Type'],
-      obj.program,
-      obj.Program
+      obj.Type
     ]);
     const rawTime = pickPreferredKnownValue([
+      ...collectValuesByFieldHints(fieldMap, ['time slot', 'program time', 'time']),
       obj.time,
-      obj.Time,
-      obj.programTime,
-      obj.program_time,
-      obj['Time Slot'],
-      obj['Time']
+      obj.Time
     ]);
     const rawEmail = pickPreferredKnownValue([
-      obj.hostEmail,
-      obj.host_email,
-      obj.email,
-      obj.Email,
-      obj['Host email'],
-      obj['Host Email'],
-      obj['Email Address'],
+      ...collectValuesByFieldHints(
+        fieldMap,
+        ['host email', 'email address', 'email'],
+        { excludeHints: ['current', 'new'] }
+      ),
       ...findObjectValuesByKeyHints(obj, ['email'], {
         excludeHints: ['current', 'new']
       })
     ]);
     const rawConfirmation = pickPreferredKnownValue([
-      obj.confirmationNumber,
-      obj.confirmation_number,
-      obj.confirmation,
-      obj.Confirmation,
-      obj['Confirmation Number'],
-      obj['confirmation number'],
+      ...collectValuesByFieldHints(
+        fieldMap,
+        [
+          'confirmation number',
+          'conformation number',
+          'confirmation',
+          'conformation',
+          'reservation number',
+          'reservation id',
+          'booking id',
+          'reference number',
+          'reference id',
+          'ref number',
+          'ref id'
+        ],
+        { excludeHints: ['current', 'new'] }
+      ),
       ...findObjectValuesByKeyHints(
         obj,
         [
@@ -554,14 +675,15 @@ const extractBookingsFromRow = (
       )
     ]);
     const rawOccasion = pickPreferredKnownValue([
+      ...collectValuesByFieldHints(fieldMap, ['occasion']),
       obj.occasion,
-      obj.Occasion,
-      obj['Occasion'],
-      obj['Occasion / Reason']
+      obj.Occasion
     ]);
     const date = normalizeDateString(rawDate);
     if (!date) return [];
+    const publicFields = buildPublicBookingFields(fieldMap);
     return [{
+      ...publicFields,
       date,
       type: normalizeText(rawType),
       time: normalizeText(rawTime),
@@ -661,7 +783,7 @@ const extractBookings = (data) => {
     bookings.push(
       ...extractBookingsFromRow(
         rows[i],
-        dateCol,
+        headerRow,
         programCol,
         timeCol,
         emailCols,
