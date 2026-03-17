@@ -372,20 +372,36 @@ const normalizeEmail = (value) => normalizeMaybeUnknown(value, 'N/A');
 const normalizeConfirmation = (value) => normalizeMaybeUnknown(value, 'N/A');
 const normalizeOccasion = (value) => normalizeText(value);
 const isKnownValue = (value) => normalizeMaybeUnknown(value, 'N/A') !== 'N/A';
-const findObjectValueByKeyHint = (obj, hints) => {
-  if (!obj || typeof obj !== 'object') return undefined;
+const findObjectValuesByKeyHints = (obj, hints, options = {}) => {
+  if (!obj || typeof obj !== 'object') return [];
   const loweredHints = hints.map((hint) => normalizeText(hint).toLowerCase()).filter(Boolean);
-  if (!loweredHints.length) return undefined;
+  const excludeHints = (options.excludeHints || [])
+    .map((hint) => normalizeText(hint).toLowerCase())
+    .filter(Boolean);
+  if (!loweredHints.length) return [];
 
+  const preferredMatches = [];
+  const fallbackMatches = [];
   for (const [rawKey, rawValue] of Object.entries(obj)) {
     const key = normalizeText(rawKey).toLowerCase();
     if (!key) continue;
-    if (loweredHints.some((hint) => key.includes(hint))) {
-      return rawValue;
+    if (!loweredHints.some((hint) => key.includes(hint))) continue;
+
+    if (excludeHints.some((hint) => key.includes(hint))) {
+      fallbackMatches.push(rawValue);
+      continue;
     }
+    preferredMatches.push(rawValue);
   }
 
-  return undefined;
+  return [...preferredMatches, ...fallbackMatches];
+};
+const pickPreferredKnownValue = (values) => {
+  const list = Array.isArray(values) ? values : [];
+  for (const value of list) {
+    if (isKnownValue(value)) return value;
+  }
+  return list.find((value) => value !== undefined && value !== null) ?? '';
 };
 const bookingKey = (item) => {
   const date = normalizeDateString(item?.date) || '';
@@ -474,58 +490,75 @@ const extractBookingsFromRow = (
 
   if (row && typeof row === 'object') {
     const obj = row;
-    const rawDate =
-      obj.date ||
-      obj.Date ||
-      obj.programDate ||
-      obj.program_date ||
-      obj['Program Date'] ||
-      obj['Date of Program'] ||
-      obj['Date of Program (YYYY-MM-DD)'];
-    const rawType =
-      obj.type ||
-      obj.Type ||
-      obj.programType ||
-      obj.program_type ||
-      obj['Type of Program'] ||
-      obj['Program Type'] ||
-      obj.program ||
-      obj.Program;
-    const rawTime =
-      obj.time ||
-      obj.Time ||
-      obj.programTime ||
-      obj.program_time ||
-      obj['Time Slot'] ||
-      obj['Time'];
-    const rawEmail =
-      obj.hostEmail ||
-      obj.host_email ||
-      obj.email ||
-      obj.Email ||
-      obj['Host email'] ||
-      obj['Host Email'] ||
-      obj['Email Address'];
-    const rawConfirmation =
-      obj.confirmationNumber ||
-      obj.confirmation_number ||
-      obj.confirmation ||
-      obj.Confirmation ||
-      obj['Confirmation Number'] ||
-      obj['confirmation number'] ||
-      findObjectValueByKeyHint(obj, [
-        'confirmation',
-        'confirm',
-        'reservation number',
-        'reservation id',
-        'reference number',
-        'reference id'
-      ]);
-    const rawOccasion =
-      obj.occasion ||
-      obj.Occasion ||
-      obj['Occasion'] ||
-      obj['Occasion / Reason'];
+    const rawDate = pickPreferredKnownValue([
+      obj.date,
+      obj.Date,
+      obj.programDate,
+      obj.program_date,
+      obj['Program Date'],
+      obj['Date of Program'],
+      obj['Date of Program (YYYY-MM-DD)']
+    ]);
+    const rawType = pickPreferredKnownValue([
+      obj.type,
+      obj.Type,
+      obj.programType,
+      obj.program_type,
+      obj['Type of Program'],
+      obj['Program Type'],
+      obj.program,
+      obj.Program
+    ]);
+    const rawTime = pickPreferredKnownValue([
+      obj.time,
+      obj.Time,
+      obj.programTime,
+      obj.program_time,
+      obj['Time Slot'],
+      obj['Time']
+    ]);
+    const rawEmail = pickPreferredKnownValue([
+      obj.hostEmail,
+      obj.host_email,
+      obj.email,
+      obj.Email,
+      obj['Host email'],
+      obj['Host Email'],
+      obj['Email Address'],
+      ...findObjectValuesByKeyHints(obj, ['email'], {
+        excludeHints: ['current', 'new']
+      })
+    ]);
+    const rawConfirmation = pickPreferredKnownValue([
+      obj.confirmationNumber,
+      obj.confirmation_number,
+      obj.confirmation,
+      obj.Confirmation,
+      obj['Confirmation Number'],
+      obj['confirmation number'],
+      ...findObjectValuesByKeyHints(
+        obj,
+        [
+          'confirmation',
+          'conformation',
+          'confirm',
+          'reservation number',
+          'reservation id',
+          'booking id',
+          'reference number',
+          'reference id',
+          'ref number',
+          'ref id'
+        ],
+        { excludeHints: ['current', 'new'] }
+      )
+    ]);
+    const rawOccasion = pickPreferredKnownValue([
+      obj.occasion,
+      obj.Occasion,
+      obj['Occasion'],
+      obj['Occasion / Reason']
+    ]);
     const date = normalizeDateString(rawDate);
     if (!date) return [];
     return [{
@@ -608,6 +641,9 @@ const extractBookings = (data) => {
       ),
       ...appendHeaderIndexes(
         (cell) => cell.includes('confirmation') && !cell.includes('current') && !cell.includes('new')
+      ),
+      ...appendHeaderIndexes(
+        (cell) => cell.includes('conformation') && !cell.includes('current') && !cell.includes('new')
       ),
       ...appendHeaderIndexes(
         (cell) =>
@@ -1207,6 +1243,45 @@ app.get('/api/bookings', async (_req, res) => {
   }
 });
 
+const buildBookingsPayloadDiagnostics = (payloadText) => {
+  const parsed = parseJsonSafely(payloadText);
+  if (!parsed) {
+    return {
+      format: 'non-json',
+      extractedCount: 0,
+      knownEmailCount: 0,
+      knownConfirmationCount: 0
+    };
+  }
+
+  const rootType = Array.isArray(parsed) ? 'array' : 'object';
+  const rows = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed.data)
+      ? parsed.data
+      : Array.isArray(parsed.bookings)
+        ? parsed.bookings
+        : Array.isArray(parsed.rows)
+          ? parsed.rows
+          : [];
+  const firstRow = rows.length > 0 ? rows[0] : null;
+  const extracted = extractBookings(parsed);
+  const knownEmailCount = extracted.filter((item) => isKnownValue(item.email)).length;
+  const knownConfirmationCount = extracted.filter((item) =>
+    isKnownValue(item.confirmationNumber)
+  ).length;
+
+  return {
+    format: 'json',
+    rootType,
+    rowCount: rows.length,
+    firstRowType: Array.isArray(firstRow) ? 'array' : typeof firstRow,
+    extractedCount: extracted.length,
+    knownEmailCount,
+    knownConfirmationCount
+  };
+};
+
 const handleBookingsRefresh = async (_req, res) => {
   if (!hasAllRequiredEnv()) {
     return res
@@ -1225,10 +1300,12 @@ const handleBookingsRefresh = async (_req, res) => {
 
     const parsed = parseJsonSafely(refreshResult.text);
     const bookingsCount = Array.isArray(parsed?.bookings) ? parsed.bookings.length : null;
+    const diagnostics = buildBookingsPayloadDiagnostics(refreshResult.text);
     return res.status(200).json({
       ok: true,
       message: 'Bookings cache refreshed from Google Sheets.',
-      bookingsCount
+      bookingsCount,
+      diagnostics
     });
   } catch (error) {
     console.error('Manual bookings refresh error:', error);
