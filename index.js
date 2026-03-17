@@ -643,6 +643,8 @@ const extractBookingsFromRow = (
       ...collectValuesByFieldHints(
         fieldMap,
         [
+          'rk number',
+          'rk',
           'confirmation number',
           'conformation number',
           'confirmation',
@@ -660,6 +662,8 @@ const extractBookingsFromRow = (
       ...findObjectValuesByKeyHints(
         obj,
         [
+          'rk number',
+          'rk',
           'confirmation',
           'conformation',
           'confirm',
@@ -757,6 +761,12 @@ const extractBookings = (data) => {
       ...appendHeaderIndexes((cell) => cell.includes('email'))
     ]);
     confirmationCols = uniqueIndexes([
+      ...appendHeaderIndexes(
+        (cell) =>
+          (cell.includes('rk number') || cell === 'rk' || (cell.includes('rk') && cell.includes('number'))) &&
+          !cell.includes('current') &&
+          !cell.includes('new')
+      ),
       ...appendHeaderIndexes(
         (cell) =>
           cell.includes('confirmation number') && !cell.includes('current') && !cell.includes('new')
@@ -1103,7 +1113,9 @@ const refreshCacheFromAppsScript = async () => {
   const existingBookings = existingParsed ? extractBookings(existingParsed) : [];
   const existingLooseMap = new Map();
   for (const item of existingBookings) {
-    existingLooseMap.set(looseBookingKey(item), item);
+    const key = looseBookingKey(item);
+    const prior = existingLooseMap.get(key);
+    existingLooseMap.set(key, prior ? mergeBookingMetadata(item, prior) : item);
   }
 
   const enrichedIncoming = incomingBookings.map((item) => {
