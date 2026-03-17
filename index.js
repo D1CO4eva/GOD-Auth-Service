@@ -1170,6 +1170,38 @@ app.get('/api/bookings', async (_req, res) => {
   }
 });
 
+const handleBookingsRefresh = async (_req, res) => {
+  if (!hasAllRequiredEnv()) {
+    return res
+      .status(500)
+      .json({ error: 'Server is missing required secrets.', missing: missingRequiredEnv() });
+  }
+
+  try {
+    const refreshResult = await refreshCacheFromAppsScriptSafely('manual-refresh');
+    if (!refreshResult?.ok) {
+      return res
+        .status(refreshResult?.status || 500)
+        .type('application/json')
+        .send(refreshResult?.text || JSON.stringify({ error: 'Failed to refresh bookings cache.' }));
+    }
+
+    const parsed = parseJsonSafely(refreshResult.text);
+    const bookingsCount = Array.isArray(parsed?.bookings) ? parsed.bookings.length : null;
+    return res.status(200).json({
+      ok: true,
+      message: 'Bookings cache refreshed from Google Sheets.',
+      bookingsCount
+    });
+  } catch (error) {
+    console.error('Manual bookings refresh error:', error);
+    return res.status(500).json({ error: 'Failed to refresh bookings cache.' });
+  }
+};
+
+app.get(['/bookings/refresh', '/api/bookings/refresh'], handleBookingsRefresh);
+app.post(['/bookings/refresh', '/api/bookings/refresh'], handleBookingsRefresh);
+
 app.post('/api/bookings', async (req, res) => {
   if (!hasAllRequiredEnv()) {
     return res
