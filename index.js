@@ -358,6 +358,8 @@ const normalizeProgramTypeForMatch = (value) => normalizeText(value).toLowerCase
 const normalizeTimeForMatch = (value) => normalizeText(value).replace(/\s+/g, ' ').toLowerCase();
 const normalizeEmailForMatch = (value) => normalizeText(value).toLowerCase();
 const normalizeTokenForMatch = (value) => normalizeText(value).toLowerCase();
+const normalizeConfirmationForMatch = (value) =>
+  normalizeText(value).toLowerCase().replace(/[^a-z0-9]/g, '');
 const asStringOrEmpty = (value) => normalizeText(value);
 const normalizeMaybeUnknown = (value, fallback = 'N/A') => {
   const normalized = normalizeText(value);
@@ -483,7 +485,7 @@ const bookingKey = (item) => {
   const type = normalizeProgramTypeForMatch(item?.type);
   const time = normalizeTimeForMatch(item?.time);
   const email = normalizeEmailForMatch(normalizeEmail(item?.email));
-  const confirmation = normalizeTokenForMatch(normalizeConfirmation(item?.confirmationNumber));
+  const confirmation = normalizeConfirmationForMatch(normalizeConfirmation(item?.confirmationNumber));
   return `${date}|${type}|${time}|${email}|${confirmation}`;
 };
 const looseBookingKey = (item) => {
@@ -961,7 +963,9 @@ const findMatchingBookingIndex = (bookings, lookup) => {
   const normalizedProgramType = normalizeProgramTypeForMatch(lookup.programType);
   const normalizedLookupTime = normalizeTimeForMatch(lookup.time);
   const normalizedLookupEmail = normalizeEmailForMatch(normalizeEmail(lookup.email));
-  const normalizedLookupConfirmation = normalizeTokenForMatch(normalizeConfirmation(lookup.confirmationNumber));
+  const normalizedLookupConfirmation = normalizeConfirmationForMatch(
+    normalizeConfirmation(lookup.confirmationNumber)
+  );
 
   return bookings.findIndex((booking) => {
     if (normalizeDateString(booking.date) !== lookup.date) return false;
@@ -969,7 +973,7 @@ const findMatchingBookingIndex = (bookings, lookup) => {
     if (normalizedLookupTime && normalizeTimeForMatch(booking.time) !== normalizedLookupTime) return false;
     if (normalizeEmailForMatch(normalizeEmail(booking.email)) !== normalizedLookupEmail) return false;
     return (
-      normalizeTokenForMatch(normalizeConfirmation(booking.confirmationNumber)) ===
+      normalizeConfirmationForMatch(normalizeConfirmation(booking.confirmationNumber)) ===
       normalizedLookupConfirmation
     );
   });
@@ -977,7 +981,11 @@ const findMatchingBookingIndex = (bookings, lookup) => {
 
 const loadBookingsFromCacheOrSource = async (reason) => {
   const refreshResult = await refreshCacheFromAppsScriptSafely(reason);
-  if (!refreshResult?.ok) return [];
+  if (!refreshResult?.ok) {
+    const error = new Error('Failed to refresh bookings from Apps Script.');
+    error.status = refreshResult?.status || 502;
+    throw error;
+  }
 
   const parsed = parseJsonSafely(refreshResult.rawText || refreshResult.text);
   return dedupeAndSortBookings(extractBookings(parsed));
@@ -1462,41 +1470,43 @@ app.post('/api/reservations/verify', async (req, res) => {
   }
 
   try {
-    const lookup = parseReservationLookup(req.body || {});
-    if (
-      !lookup.programType ||
-      !lookup.date ||
-      !isKnownValue(lookup.email) ||
-      !isKnownValue(lookup.confirmationNumber)
-    ) {
+    const body = req.body || {};
+    const rawConfirmation =
+      body.confirmationNumber ||
+      body.confirmation ||
+      body['Confirmation Number'] ||
+      body['confirmation number'] ||
+      '';
+    const confirmationNumber = normalizeConfirmation(rawConfirmation);
+    if (!isKnownValue(confirmationNumber)) {
       return res.status(400).json({
-        error: 'Program type, date, email, and confirmation number are required.'
+        error: 'confirmationNumber is required.'
       });
     }
 
     const bookings = await loadBookingsFromCacheOrSource('reservation-verify');
-    const matchIndex = findMatchingBookingIndex(bookings, lookup);
-    if (matchIndex < 0) {
+    const normalizedLookupConfirmation = normalizeConfirmationForMatch(confirmationNumber);
+    const booking = bookings.find(
+      (item) =>
+        normalizeConfirmationForMatch(normalizeConfirmation(item.confirmationNumber)) ===
+        normalizedLookupConfirmation
+    );
+    if (!booking) {
       return res.status(404).json({
-        found: false,
-        message: 'Sorry! Could not find your Reservation! Please try again.'
+        message: 'Sorry, could not find your booking'
       });
     }
 
-    const booking = bookings[matchIndex];
     return res.status(200).json({
-      found: true,
-      reservation: {
-        programType: booking.type,
-        date: booking.date,
-        time: booking.time,
-        email: normalizeEmail(booking.email),
-        confirmationNumber: normalizeConfirmation(booking.confirmationNumber),
-        occasion: normalizeOccasion(booking.occasion)
-      }
+      message: 'Booking Exists'
     });
   } catch (error) {
     console.error('Reservation verify error:', error);
+    if (error && Number.isInteger(error.status) && error.status >= 400) {
+      return res.status(502).json({
+        error: 'Unable to verify booking right now. Please try again shortly.'
+      });
+    }
     return res.status(500).json({ error: 'Failed to verify reservation.' });
   }
 });

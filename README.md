@@ -15,7 +15,7 @@ It proxies browser/app requests to a Google Apps Script web app that reads/write
   Forwards JSON to your Apps Script `APPS_SCRIPT_URL` with `token: APPS_SCRIPT_POST_TOKEN` merged into the body.  
   On successful write, appends/updates `cache.json` directly from the POST payload.
 - `POST /api/reservations/verify`  
-  Verifies whether a reservation exists for the provided `programType`, `date`, `email`, and `confirmationNumber`.
+  Verifies whether a reservation exists for the provided `confirmationNumber`.
 - `POST /api/reservations/update`  
   Forwards reservation update request to Apps Script and updates local cache on success.
 - `POST /api/reservations/delete`  
