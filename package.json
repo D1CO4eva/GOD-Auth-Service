@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "bookings:dev": "powershell -ExecutionPolicy Bypass -File ./scripts/local-dev.ps1"
   },
   "dependencies": {
     "express": "^4.19.0"

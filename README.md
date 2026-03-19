@@ -9,7 +9,7 @@ It proxies browser/app requests to a Google Apps Script web app that reads/write
 - `GET /`  
   Returns `{"status":"ok"}` if no frontend build is present.
 - `GET /api/bookings`  
-  Returns cached bookings from local `cache.json`.  
+  Returns cached bookings from local `cache.json` with public fields only: `date`, `programType`, `time`.  
   If cache is empty, it reads from Apps Script once and seeds `cache.json`.
 - `POST /api/bookings`  
   Forwards JSON to your Apps Script `APPS_SCRIPT_URL` with `token: APPS_SCRIPT_POST_TOKEN` merged into the body.  
@@ -85,7 +85,7 @@ Notes:
 
 - `GET /api/bookings` serves from this file for fast responses.
 - After successful `POST /api/bookings`, cache is updated directly from submitted payload (no full-sheet re-fetch).
-- Cache stores booking records with `date`, `type`, `time`, `email`, `confirmationNumber`, and `occasion` when available.
+- Cache stores public booking records only: `date`, `programType`, and `time`.
 - Cache is also reconciled from Apps Script in the background (startup + interval) so manual Google Sheet edits are reflected.
 
 This service also stores menu post history in `menu_cache.json`:
@@ -124,10 +124,15 @@ npm start
 Quick checks:
 
 ```powershell
-curl.exe -i http://127.0.0.1:8080/
-curl.exe -i http://127.0.0.1:8080/api/bookings
-curl.exe -i http://127.0.0.1:8080/menu
-curl.exe -i -X POST http://127.0.0.1:8080/generate -H "Content-Type: application/json" -d "{\"messages\":[{\"role\":\"user\",\"content\":\"Return JSON only.\"}]}"
+curl.exe -i http://localhost:8080/
+curl.exe -i http://localhost:8080/api/bookings
+```
+
+Local bookings-only workflow:
+
+```powershell
+# Run server with local defaults (Ctrl+C to stop)
+npm run bookings:dev
 ```
 
 ## CORS (Browser Frontend On Another Domain)

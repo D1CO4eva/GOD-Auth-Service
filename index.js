@@ -843,7 +843,29 @@ const dedupeAndSortBookings = (bookings) => {
   return unique;
 };
 
-const toCanonicalPayload = (bookings) => JSON.stringify({ bookings: dedupeAndSortBookings(bookings) });
+const dedupeAndSortPublicBookings = (bookings) => {
+  const byKey = new Map();
+  for (const item of bookings || []) {
+    const date = normalizeDateString(item?.date) || '';
+    if (!date) continue;
+    const programType = normalizeText(item?.programType || item?.type);
+    const time = normalizeText(item?.time);
+    const key = `${date}|${normalizeProgramTypeForMatch(programType)}|${normalizeTimeForMatch(time)}`;
+    if (!byKey.has(key)) {
+      byKey.set(key, { date, programType, time });
+    }
+  }
+
+  const unique = Array.from(byKey.values());
+  unique.sort((left, right) => {
+    if (left.date !== right.date) return left.date.localeCompare(right.date);
+    if (left.programType !== right.programType) return left.programType.localeCompare(right.programType);
+    return left.time.localeCompare(right.time);
+  });
+  return unique;
+};
+
+const toCanonicalPayload = (bookings) => JSON.stringify({ bookings: dedupeAndSortPublicBookings(bookings) });
 
 const appendBookingToCache = async (postBody, postResult) => {
   const rawDate =
@@ -954,16 +976,10 @@ const findMatchingBookingIndex = (bookings, lookup) => {
 };
 
 const loadBookingsFromCacheOrSource = async (reason) => {
-  const cacheRecord = await readCacheRecord();
-  if (cacheRecord.payload) {
-    const parsed = parseJsonSafely(cacheRecord.payload);
-    return dedupeAndSortBookings(extractBookings(parsed));
-  }
-
   const refreshResult = await refreshCacheFromAppsScriptSafely(reason);
   if (!refreshResult?.ok) return [];
 
-  const parsed = parseJsonSafely(refreshResult.text);
+  const parsed = parseJsonSafely(refreshResult.rawText || refreshResult.text);
   return dedupeAndSortBookings(extractBookings(parsed));
 };
 
@@ -1356,11 +1372,12 @@ app.get('/api/bookings', async (_req, res) => {
         return res.status(200).type('application/json').send(normalizedPayload);
       }
 
-      if (isCacheStale(cacheRecord)) {
-        void refreshCacheFromAppsScriptSafely('stale-get');
+      const refreshResult = await refreshCacheFromAppsScriptSafely('invalid-cache-get');
+      if (refreshResult?.ok) {
+        res.setHeader('X-Bookings-Source', 'apps-script');
+        return res.status(200).type('application/json').send(refreshResult.text);
       }
-      res.setHeader('X-Bookings-Source', 'cache-file');
-      return res.status(200).type('application/json').send(cacheRecord.payload);
+      return res.status(500).json({ error: 'Failed to load bookings.' });
     }
 
     const refreshResult = await refreshCacheFromAppsScriptSafely('cache-empty-get');
@@ -1379,115 +1396,6 @@ app.get('/api/bookings', async (_req, res) => {
   }
 });
 
-const buildBookingsPayloadDiagnostics = (payloadText) => {
-  const parsed = parseJsonSafely(payloadText);
-  if (!parsed) {
-    return {
-      format: 'non-json',
-      extractedCount: 0,
-      knownEmailCount: 0,
-      knownConfirmationCount: 0
-    };
-  }
-
-  const rootType = Array.isArray(parsed) ? 'array' : 'object';
-  const rows = Array.isArray(parsed)
-    ? parsed
-    : Array.isArray(parsed.data)
-      ? parsed.data
-      : Array.isArray(parsed.bookings)
-        ? parsed.bookings
-        : Array.isArray(parsed.rows)
-          ? parsed.rows
-          : [];
-  const firstRow = rows.length > 0 ? rows[0] : null;
-  const extracted = extractBookings(parsed);
-  const knownEmailCount = extracted.filter((item) => isKnownValue(item.email)).length;
-  const knownConfirmationCount = extracted.filter((item) =>
-    isKnownValue(item.confirmationNumber)
-  ).length;
-  const firstRowKeys =
-    firstRow && typeof firstRow === 'object' && !Array.isArray(firstRow)
-      ? Object.keys(firstRow).slice(0, 30)
-      : [];
-  let rawEmailValueCount = 0;
-  let rawConfirmationValueCount = 0;
-  if (rows.length > 0 && Array.isArray(firstRow)) {
-    const headerStrings = firstRow.map((cell) => normalizeText(cell).toLowerCase());
-    const emailIndexes = [];
-    const confirmationIndexes = [];
-    for (let i = 0; i < headerStrings.length; i += 1) {
-      const header = headerStrings[i];
-      if (!header) continue;
-      if (header.includes('email')) emailIndexes.push(i);
-      if (
-        header.includes('confirmation') ||
-        header.includes('conformation') ||
-        header.includes('confirm') ||
-        header.includes('reservation') ||
-        header.includes('reference')
-      ) {
-        confirmationIndexes.push(i);
-      }
-    }
-
-    for (let i = 1; i < rows.length; i += 1) {
-      const row = rows[i];
-      if (!Array.isArray(row)) continue;
-      if (emailIndexes.some((col) => col < row.length && isKnownValue(row[col]))) rawEmailValueCount += 1;
-      if (
-        confirmationIndexes.some((col) => col < row.length && isKnownValue(row[col]))
-      ) {
-        rawConfirmationValueCount += 1;
-      }
-    }
-  } else {
-    const emailValues = [];
-    const confirmationValues = [];
-    for (const row of rows) {
-      if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
-      emailValues.push(
-        ...findObjectValuesByKeyHints(row, ['email'], {
-          excludeHints: ['current', 'new']
-        })
-      );
-      confirmationValues.push(
-        ...findObjectValuesByKeyHints(
-          row,
-          [
-            'confirmation',
-            'conformation',
-            'confirm',
-            'reservation number',
-            'reservation id',
-            'booking id',
-            'reference number',
-            'reference id',
-            'ref number',
-            'ref id'
-          ],
-          { excludeHints: ['current', 'new'] }
-        )
-      );
-    }
-    rawEmailValueCount = emailValues.filter((value) => isKnownValue(value)).length;
-    rawConfirmationValueCount = confirmationValues.filter((value) => isKnownValue(value)).length;
-  }
-
-  return {
-    format: 'json',
-    rootType,
-    rowCount: rows.length,
-    firstRowType: Array.isArray(firstRow) ? 'array' : typeof firstRow,
-    firstRowKeys,
-    extractedCount: extracted.length,
-    knownEmailCount,
-    knownConfirmationCount,
-    rawEmailValueCount,
-    rawConfirmationValueCount
-  };
-};
-
 const handleBookingsRefresh = async (_req, res) => {
   if (!hasAllRequiredEnv()) {
     return res
@@ -1505,13 +1413,12 @@ const handleBookingsRefresh = async (_req, res) => {
     }
 
     const parsed = parseJsonSafely(refreshResult.text);
-    const bookingsCount = Array.isArray(parsed?.bookings) ? parsed.bookings.length : null;
-    const diagnostics = buildBookingsPayloadDiagnostics(refreshResult.rawText || refreshResult.text);
+    const bookings = Array.isArray(parsed?.bookings) ? parsed.bookings : [];
     return res.status(200).json({
       ok: true,
       message: 'Bookings cache refreshed from Google Sheets.',
-      bookingsCount,
-      diagnostics
+      bookingsCount: bookings.length,
+      bookings
     });
   } catch (error) {
     console.error('Manual bookings refresh error:', error);
