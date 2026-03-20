@@ -1617,6 +1617,14 @@ app.post('/api/reservations/update', async (req, res) => {
   try {
     const body = req.body || {};
     const lookup = parseReservationLookup(body.lookup || body.current || body);
+    const rawConfirmation =
+      body.confirmationNumber ||
+      body.confirmation ||
+      body['Confirmation Number'] ||
+      body['confirmation number'] ||
+      lookup.confirmationNumber ||
+      '';
+    const confirmationNumber = normalizeConfirmation(rawConfirmation);
     const updatesSource = body.updates || body.next || body;
     const nextDate = normalizeDateString(
       updatesSource.newDate || updatesSource.date || updatesSource.Date || updatesSource['New Date']
@@ -1629,39 +1637,62 @@ app.post('/api/reservations/update', async (req, res) => {
         updatesSource['Time Slot']
     );
 
-    if (
-      !lookup.programType ||
-      !lookup.date ||
-      !isKnownValue(lookup.email) ||
-      !isKnownValue(lookup.confirmationNumber)
-    ) {
-      return res.status(400).json({ error: 'Current reservation details are required.' });
+    if (!isKnownValue(confirmationNumber)) {
+      return res.status(400).json({ error: 'confirmationNumber is required.' });
     }
     if (!nextDate) {
       return res.status(400).json({ error: 'New date is required.' });
     }
 
-    const bookings = await loadBookingsFromCacheOrSource('reservation-update-verify');
-    const matchIndex = findMatchingBookingIndex(bookings, lookup);
-    if (matchIndex < 0) {
-      return res.status(404).json({
-        found: false,
-        message: 'Sorry! Could not find your Reservation! Please try again.'
+    const verifyResult = await verifyConfirmationWithAppsScript(confirmationNumber);
+    if (!verifyResult.ok) {
+      return res.status(502).json({
+        error: 'Unable to verify booking right now. Please try again shortly.'
       });
     }
-    const matchedBooking = bookings[matchIndex];
-    const matchedEmail = normalizeEmail(matchedBooking.email || lookup.email);
-    const matchedConfirmation = normalizeConfirmation(
-      matchedBooking.confirmationNumber || lookup.confirmationNumber
+    if (!verifyResult.exists) {
+      return res.status(404).json({
+        message: 'Sorry, could not find your booking'
+      });
+    }
+    const matchedBooking =
+      verifyResult.booking && typeof verifyResult.booking === 'object' ? verifyResult.booking : {};
+    const matchedProgramType = normalizeText(
+      matchedBooking['Type of Program'] ||
+        matchedBooking['Program Type'] ||
+        matchedBooking.programType ||
+        matchedBooking.type ||
+        lookup.programType
     );
-    const matchedDate = normalizeDateString(matchedBooking.date) || lookup.date;
-    const matchedTime = normalizeText(matchedBooking.time || lookup.time);
+    const matchedEmail = normalizeEmail(
+      matchedBooking['Host email'] ||
+        matchedBooking['Host Email'] ||
+        matchedBooking.email ||
+        matchedBooking.Email ||
+        lookup.email
+    );
+    const matchedConfirmation = normalizeConfirmation(
+      matchedBooking['Confirmation Number'] ||
+        matchedBooking.confirmationNumber ||
+        matchedBooking.confirmation ||
+        confirmationNumber
+    );
+    const matchedDate = normalizeDateString(
+      matchedBooking.Date || matchedBooking.date || matchedBooking['Program Date'] || lookup.date
+    );
+    const matchedTime = normalizeText(matchedBooking.Time || matchedBooking.time || lookup.time);
 
     const result = await postToAppsScript({
       ...body,
       action: 'reschedule',
       operation: 'reschedule',
-      reservationLookup: lookup,
+      reservationLookup: {
+        confirmationNumber: matchedConfirmation,
+        ...(matchedProgramType ? { programType: matchedProgramType } : {}),
+        ...(matchedDate ? { date: matchedDate } : {}),
+        ...(matchedTime ? { time: matchedTime } : {}),
+        ...(isKnownValue(matchedEmail) ? { email: matchedEmail } : {})
+      },
       reservationUpdate: {
         date: nextDate,
         ...(nextTime ? { time: nextTime } : {})
@@ -1669,7 +1700,7 @@ app.post('/api/reservations/update', async (req, res) => {
       // Legacy/common booking keys kept for Apps Script compatibility.
       Date: asStringOrEmpty(matchedDate),
       Time: asStringOrEmpty(matchedTime),
-      'Type of Program': asStringOrEmpty(lookup.programType),
+      'Type of Program': asStringOrEmpty(matchedProgramType),
       'Host email': asStringOrEmpty(matchedEmail),
       'Confirmation Number': asStringOrEmpty(matchedConfirmation),
       newDate: asStringOrEmpty(nextDate),
@@ -1685,10 +1716,6 @@ app.post('/api/reservations/update', async (req, res) => {
 
     if (result.ok) {
       try {
-        await updateReservationInCache(lookup, {
-          date: nextDate,
-          ...(nextTime ? { time: nextTime } : {})
-        });
         void refreshCacheFromAppsScriptSafely('reservation-update-reconcile');
       } catch (cacheError) {
         console.error('Cache update after reservation update failed:', cacheError);
@@ -1712,38 +1739,68 @@ app.post('/api/reservations/delete', async (req, res) => {
   try {
     const body = req.body || {};
     const lookup = parseReservationLookup(body.lookup || body.current || body);
-    if (
-      !lookup.programType ||
-      !lookup.date ||
-      !isKnownValue(lookup.email) ||
-      !isKnownValue(lookup.confirmationNumber)
-    ) {
-      return res.status(400).json({ error: 'Reservation details are required.' });
+    const rawConfirmation =
+      body.confirmationNumber ||
+      body.confirmation ||
+      body['Confirmation Number'] ||
+      body['confirmation number'] ||
+      lookup.confirmationNumber ||
+      '';
+    const confirmationNumber = normalizeConfirmation(rawConfirmation);
+    if (!isKnownValue(confirmationNumber)) {
+      return res.status(400).json({ error: 'confirmationNumber is required.' });
     }
 
-    const bookings = await loadBookingsFromCacheOrSource('reservation-delete-verify');
-    const matchIndex = findMatchingBookingIndex(bookings, lookup);
-    if (matchIndex < 0) {
-      return res.status(404).json({
-        found: false,
-        message: 'Sorry! Could not find your Reservation! Please try again.'
+    const verifyResult = await verifyConfirmationWithAppsScript(confirmationNumber);
+    if (!verifyResult.ok) {
+      return res.status(502).json({
+        error: 'Unable to verify booking right now. Please try again shortly.'
       });
     }
-    const matchedBooking = bookings[matchIndex];
-    const matchedEmail = normalizeEmail(matchedBooking.email || lookup.email);
-    const matchedConfirmation = normalizeConfirmation(
-      matchedBooking.confirmationNumber || lookup.confirmationNumber
+    if (!verifyResult.exists) {
+      return res.status(404).json({
+        message: 'Sorry, could not find your booking'
+      });
+    }
+    const matchedBooking =
+      verifyResult.booking && typeof verifyResult.booking === 'object' ? verifyResult.booking : {};
+    const matchedProgramType = normalizeText(
+      matchedBooking['Type of Program'] ||
+        matchedBooking['Program Type'] ||
+        matchedBooking.programType ||
+        matchedBooking.type ||
+        lookup.programType
     );
-    const matchedDate = normalizeDateString(matchedBooking.date) || lookup.date;
+    const matchedEmail = normalizeEmail(
+      matchedBooking['Host email'] ||
+        matchedBooking['Host Email'] ||
+        matchedBooking.email ||
+        matchedBooking.Email ||
+        lookup.email
+    );
+    const matchedConfirmation = normalizeConfirmation(
+      matchedBooking['Confirmation Number'] ||
+        matchedBooking.confirmationNumber ||
+        matchedBooking.confirmation ||
+        confirmationNumber
+    );
+    const matchedDate = normalizeDateString(
+      matchedBooking.Date || matchedBooking.date || matchedBooking['Program Date'] || lookup.date
+    );
 
     const result = await postToAppsScript({
       ...body,
       action: 'cancel',
       operation: 'cancel',
-      reservationLookup: lookup,
+      reservationLookup: {
+        confirmationNumber: matchedConfirmation,
+        ...(matchedProgramType ? { programType: matchedProgramType } : {}),
+        ...(matchedDate ? { date: matchedDate } : {}),
+        ...(isKnownValue(matchedEmail) ? { email: matchedEmail } : {})
+      },
       // Legacy/common booking keys kept for Apps Script compatibility.
       Date: asStringOrEmpty(matchedDate),
-      'Type of Program': asStringOrEmpty(lookup.programType),
+      'Type of Program': asStringOrEmpty(matchedProgramType),
       'Host email': asStringOrEmpty(matchedEmail),
       'Confirmation Number': asStringOrEmpty(matchedConfirmation),
       // Explicit keys for reservation delete flows.
@@ -1754,7 +1811,6 @@ app.post('/api/reservations/delete', async (req, res) => {
 
     if (result.ok) {
       try {
-        await deleteReservationFromCache(lookup);
         void refreshCacheFromAppsScriptSafely('reservation-delete-reconcile');
       } catch (cacheError) {
         console.error('Cache delete after reservation cancel failed:', cacheError);

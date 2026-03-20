@@ -18,9 +18,11 @@ It proxies browser/app requests to a Google Apps Script web app that reads/write
   Verifies whether a reservation exists for the provided `confirmationNumber`.
   On success, returns `{"message":"Booking Exists","booking":{...}}` with booking details from Apps Script.
 - `POST /api/reservations/update`  
-  Forwards reservation update request to Apps Script and updates local cache on success.
+  Updates a reservation using `confirmationNumber` (required) and `newDate` (required; optional `newTime`).
+  The service first looks up booking details from Apps Script by confirmation, then forwards a reschedule request.
 - `POST /api/reservations/delete`  
-  Forwards reservation cancellation request to Apps Script and removes matching entry from local cache on success.
+  Cancels a reservation using `confirmationNumber` (required).
+  The service first looks up booking details from Apps Script by confirmation, then forwards a cancel request.
 - `POST /api/cache/reset` (alias: `POST /cache/reset`)  
   Manually clears local cache files.  
   Optional JSON body: `{"target":"all"}` (default), `{"target":"bookings"}`, or `{"target":"menu"}`.
