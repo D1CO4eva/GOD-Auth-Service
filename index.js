@@ -1049,6 +1049,69 @@ const fetchBookingsFromAppsScript = async () => {
   };
 };
 
+const verifyConfirmationWithAppsScript = async (confirmationNumber) => {
+  const readUrl = new URL(process.env.APPS_SCRIPT_URL);
+  readUrl.searchParams.set('token', process.env.APPS_SCRIPT_GET_TOKEN);
+  readUrl.searchParams.set('confirmation', normalizeText(confirmationNumber));
+
+  const response = await fetch(readUrl.toString(), {
+    method: 'GET',
+    cache: 'no-cache'
+  });
+
+  const text = await response.text();
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status,
+      exists: false,
+      text
+    };
+  }
+
+  const parsed = parseJsonSafely(text);
+  if (parsed === null) {
+    const lowered = normalizeText(text).toLowerCase();
+    if (!lowered) return { ok: true, status: response.status, exists: false, text };
+    if (
+      lowered.includes('not found') ||
+      lowered.includes('no booking') ||
+      lowered.includes('no reservation')
+    ) {
+      return { ok: true, status: response.status, exists: false, text };
+    }
+    return { ok: true, status: response.status, exists: true, text };
+  }
+
+  const normalizedLookup = normalizeConfirmationForMatch(confirmationNumber);
+  const extracted = extractBookings(parsed);
+  if (
+    extracted.some(
+      (item) =>
+        normalizeConfirmationForMatch(normalizeConfirmation(item?.confirmationNumber)) ===
+        normalizedLookup
+    )
+  ) {
+    return { ok: true, status: response.status, exists: true, text };
+  }
+
+  const rows = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed.data)
+      ? parsed.data
+      : Array.isArray(parsed.bookings)
+        ? parsed.bookings
+        : Array.isArray(parsed.rows)
+          ? parsed.rows
+          : [];
+  return {
+    ok: true,
+    status: response.status,
+    exists: rows.length > 0,
+    text
+  };
+};
+
 const postToAppsScript = async (body) => {
   const payload = sanitizeForAppsScript({
     ...(body || {}),
@@ -1484,14 +1547,14 @@ app.post('/api/reservations/verify', async (req, res) => {
       });
     }
 
-    const bookings = await loadBookingsFromCacheOrSource('reservation-verify');
-    const normalizedLookupConfirmation = normalizeConfirmationForMatch(confirmationNumber);
-    const booking = bookings.find(
-      (item) =>
-        normalizeConfirmationForMatch(normalizeConfirmation(item.confirmationNumber)) ===
-        normalizedLookupConfirmation
-    );
-    if (!booking) {
+    const verifyResult = await verifyConfirmationWithAppsScript(confirmationNumber);
+    if (!verifyResult.ok) {
+      return res.status(502).json({
+        error: 'Unable to verify booking right now. Please try again shortly.'
+      });
+    }
+
+    if (!verifyResult.exists) {
       return res.status(404).json({
         message: 'Sorry, could not find your booking'
       });
@@ -1502,11 +1565,6 @@ app.post('/api/reservations/verify', async (req, res) => {
     });
   } catch (error) {
     console.error('Reservation verify error:', error);
-    if (error && Number.isInteger(error.status) && error.status >= 400) {
-      return res.status(502).json({
-        error: 'Unable to verify booking right now. Please try again shortly.'
-      });
-    }
     return res.status(500).json({ error: 'Failed to verify reservation.' });
   }
 });
