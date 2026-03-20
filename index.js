@@ -1065,6 +1065,7 @@ const verifyConfirmationWithAppsScript = async (confirmationNumber) => {
       ok: false,
       status: response.status,
       exists: false,
+      booking: null,
       text
     };
   }
@@ -1078,9 +1079,39 @@ const verifyConfirmationWithAppsScript = async (confirmationNumber) => {
       lowered.includes('no booking') ||
       lowered.includes('no reservation')
     ) {
-      return { ok: true, status: response.status, exists: false, text };
+      return { ok: true, status: response.status, exists: false, booking: null, text };
     }
-    return { ok: true, status: response.status, exists: true, text };
+    return { ok: true, status: response.status, exists: true, booking: { raw: text }, text };
+  }
+
+  if (parsed && typeof parsed === 'object') {
+    if (parsed.success === true || parsed.found === true || parsed.exists === true) {
+      const booking =
+        parsed.data && typeof parsed.data === 'object' && !Array.isArray(parsed.data)
+          ? parsed.data
+          : parsed.booking && typeof parsed.booking === 'object' && !Array.isArray(parsed.booking)
+            ? parsed.booking
+            : parsed.reservation && typeof parsed.reservation === 'object' && !Array.isArray(parsed.reservation)
+              ? parsed.reservation
+              : null;
+      return { ok: true, status: response.status, exists: true, booking, text };
+    }
+    if (
+      parsed.success === false ||
+      parsed.found === false ||
+      parsed.exists === false
+    ) {
+      return { ok: true, status: response.status, exists: false, booking: null, text };
+    }
+
+    if (
+      parsed.data &&
+      typeof parsed.data === 'object' &&
+      !Array.isArray(parsed.data) &&
+      Object.keys(parsed.data).length > 0
+    ) {
+      return { ok: true, status: response.status, exists: true, booking: parsed.data, text };
+    }
   }
 
   const normalizedLookup = normalizeConfirmationForMatch(confirmationNumber);
@@ -1092,7 +1123,12 @@ const verifyConfirmationWithAppsScript = async (confirmationNumber) => {
         normalizedLookup
     )
   ) {
-    return { ok: true, status: response.status, exists: true, text };
+    const matched = extracted.find(
+      (item) =>
+        normalizeConfirmationForMatch(normalizeConfirmation(item?.confirmationNumber)) ===
+        normalizedLookup
+    );
+    return { ok: true, status: response.status, exists: true, booking: matched || null, text };
   }
 
   const rows = Array.isArray(parsed)
@@ -1108,6 +1144,7 @@ const verifyConfirmationWithAppsScript = async (confirmationNumber) => {
     ok: true,
     status: response.status,
     exists: rows.length > 0,
+    booking: rows.length > 0 ? rows[0] : null,
     text
   };
 };
@@ -1561,7 +1598,8 @@ app.post('/api/reservations/verify', async (req, res) => {
     }
 
     return res.status(200).json({
-      message: 'Booking Exists'
+      message: 'Booking Exists',
+      booking: verifyResult.booking || null
     });
   } catch (error) {
     console.error('Reservation verify error:', error);
