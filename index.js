@@ -8,7 +8,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const distPath = path.join(__dirname, 'dist');
 const indexHtmlPath = path.join(distPath, 'index.html');
-const cacheFilePath = path.join(__dirname, 'cache.json');
+const BOOKING_CACHE_YEARS = [2026, 2027];
+const DEFAULT_BOOKING_CACHE_YEAR = BOOKING_CACHE_YEARS[0];
+const legacyCacheFilePath = path.join(__dirname, 'cache.json');
+const bookingCacheFilePathByYear = (year) => path.join(__dirname, `cache_${year}.json`);
 const menuCacheFilePath = path.join(__dirname, 'menu_cache.json');
 const emptyCacheRecord = {
   updatedAt: null,
@@ -27,7 +30,7 @@ const backgroundRefreshIntervalMs =
   CACHE_BACKGROUND_REFRESH_INTERVAL_SECONDS > 0
     ? Math.floor(CACHE_BACKGROUND_REFRESH_INTERVAL_SECONDS * 1000)
     : 300000;
-let refreshInFlight = null;
+const refreshInFlightByYear = new Map();
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -225,12 +228,38 @@ const isCacheStale = (cacheRecord) => {
   return Date.now() - updatedAtMs >= backgroundRefreshIntervalMs;
 };
 
-const ensureCacheFile = async () => {
+const normalizeBookingYear = (value, fallbackYear = DEFAULT_BOOKING_CACHE_YEAR) => {
+  const parsed = Number.parseInt(normalizeText(value), 10);
+  if (Number.isFinite(parsed) && BOOKING_CACHE_YEARS.includes(parsed)) {
+    return parsed;
+  }
+  return fallbackYear;
+};
+
+const ensureCacheFile = async (year = DEFAULT_BOOKING_CACHE_YEAR) => {
+  const normalizedYear = normalizeBookingYear(year);
+  const cacheFilePath = bookingCacheFilePathByYear(normalizedYear);
   try {
     await fsPromises.access(cacheFilePath, fs.constants.F_OK);
   } catch {
     await fsPromises.writeFile(cacheFilePath, `${JSON.stringify(emptyCacheRecord, null, 2)}\n`, 'utf8');
   }
+};
+
+const ensureBookingCacheFiles = async () => {
+  const cache2026Path = bookingCacheFilePathByYear(2026);
+  try {
+    await fsPromises.access(legacyCacheFilePath, fs.constants.F_OK);
+    try {
+      await fsPromises.access(cache2026Path, fs.constants.F_OK);
+    } catch {
+      await fsPromises.rename(legacyCacheFilePath, cache2026Path);
+    }
+  } catch {
+    // no legacy cache file to migrate
+  }
+
+  await Promise.all(BOOKING_CACHE_YEARS.map((year) => ensureCacheFile(year)));
 };
 
 const ensureMenuCacheFile = async () => {
@@ -245,8 +274,10 @@ const ensureMenuCacheFile = async () => {
   }
 };
 
-const readCacheRecord = async () => {
-  await ensureCacheFile();
+const readCacheRecord = async (year = DEFAULT_BOOKING_CACHE_YEAR) => {
+  const normalizedYear = normalizeBookingYear(year);
+  const cacheFilePath = bookingCacheFilePathByYear(normalizedYear);
+  await ensureCacheFile(normalizedYear);
 
   try {
     const content = await fsPromises.readFile(cacheFilePath, 'utf8');
@@ -284,7 +315,9 @@ const readMenuCacheRecord = async () => {
   }
 };
 
-const writeCacheRecord = async (record) => {
+const writeCacheRecord = async (record, year = DEFAULT_BOOKING_CACHE_YEAR) => {
+  const normalizedYear = normalizeBookingYear(year);
+  const cacheFilePath = bookingCacheFilePathByYear(normalizedYear);
   const normalized = normalizeCacheRecord(record);
   const tmpPath = `${cacheFilePath}.tmp`;
   await fsPromises.writeFile(tmpPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
@@ -302,7 +335,7 @@ const resetLocalCaches = async (target) => {
   const normalizedTarget = normalizeText(target).toLowerCase() || 'all';
 
   if (normalizedTarget === 'all' || normalizedTarget === 'bookings') {
-    await writeCacheRecord({ ...emptyCacheRecord });
+    await Promise.all(BOOKING_CACHE_YEARS.map((year) => writeCacheRecord({ ...emptyCacheRecord }, year)));
   }
   if (normalizedTarget === 'all' || normalizedTarget === 'menu') {
     await writeMenuCacheRecord({ ...emptyMenuCacheRecord });
@@ -357,7 +390,6 @@ const normalizeText = (value) => {
 const normalizeProgramTypeForMatch = (value) => normalizeText(value).toLowerCase();
 const normalizeTimeForMatch = (value) => normalizeText(value).replace(/\s+/g, ' ').toLowerCase();
 const normalizeEmailForMatch = (value) => normalizeText(value).toLowerCase();
-const normalizeTokenForMatch = (value) => normalizeText(value).toLowerCase();
 const normalizeConfirmationForMatch = (value) =>
   normalizeText(value).toLowerCase().replace(/[^a-z0-9]/g, '');
 const asStringOrEmpty = (value) => normalizeText(value);
@@ -869,63 +901,6 @@ const dedupeAndSortPublicBookings = (bookings) => {
 
 const toCanonicalPayload = (bookings) => JSON.stringify({ bookings: dedupeAndSortPublicBookings(bookings) });
 
-const appendBookingToCache = async (postBody, postResult) => {
-  const rawDate =
-    postBody.Date ||
-    postBody.date ||
-    postBody.programDate ||
-    postBody.program_date ||
-    postBody['Program Date'];
-  const rawType =
-    postBody['Type of Program'] ||
-    postBody.typeOfProgram ||
-    postBody.type ||
-    postBody['Program Type'] ||
-    postBody.program;
-  const rawTime = postBody.Time || postBody.time || postBody['Time Slot'] || postBody.programTime;
-  const rawEmail =
-    postBody['Host email'] ||
-    postBody['Host Email'] ||
-    postBody.hostEmail ||
-    postBody.email ||
-    postBody.Email;
-  const rawConfirmation =
-    postBody['Confirmation Number'] ||
-    postBody.confirmationNumber ||
-    postBody.confirmation ||
-    postResult?.confirmationNumber ||
-    postResult?.['Confirmation Number'] ||
-    postBody['confirmation number'];
-  const rawOccasion =
-    postBody.Occasion ||
-    postBody.occasion ||
-    postBody['Occasion / Reason'] ||
-    '';
-
-  const date = normalizeDateString(rawDate);
-  if (!date) return;
-
-  const cacheRecord = await readCacheRecord();
-  const cachedData = cacheRecord.payload ? parseJsonSafely(cacheRecord.payload) : null;
-  const existingBookings = extractBookings(cachedData);
-  const nextBookings = dedupeAndSortBookings([
-    ...existingBookings,
-    {
-      date,
-      type: normalizeText(rawType),
-      time: normalizeText(rawTime),
-      email: normalizeEmail(rawEmail),
-      confirmationNumber: normalizeConfirmation(rawConfirmation),
-      occasion: normalizeOccasion(rawOccasion)
-    }
-  ]);
-
-  await writeCacheRecord({
-    updatedAt: new Date().toISOString(),
-    payload: toCanonicalPayload(nextBookings)
-  });
-};
-
 const parseReservationLookup = (body) => {
   const rawProgramType =
     body.programType ||
@@ -959,82 +934,11 @@ const parseReservationLookup = (body) => {
   };
 };
 
-const findMatchingBookingIndex = (bookings, lookup) => {
-  const normalizedProgramType = normalizeProgramTypeForMatch(lookup.programType);
-  const normalizedLookupTime = normalizeTimeForMatch(lookup.time);
-  const normalizedLookupEmail = normalizeEmailForMatch(normalizeEmail(lookup.email));
-  const normalizedLookupConfirmation = normalizeConfirmationForMatch(
-    normalizeConfirmation(lookup.confirmationNumber)
-  );
-
-  return bookings.findIndex((booking) => {
-    if (normalizeDateString(booking.date) !== lookup.date) return false;
-    if (normalizeProgramTypeForMatch(booking.type) !== normalizedProgramType) return false;
-    if (normalizedLookupTime && normalizeTimeForMatch(booking.time) !== normalizedLookupTime) return false;
-    if (normalizeEmailForMatch(normalizeEmail(booking.email)) !== normalizedLookupEmail) return false;
-    return (
-      normalizeConfirmationForMatch(normalizeConfirmation(booking.confirmationNumber)) ===
-      normalizedLookupConfirmation
-    );
-  });
-};
-
-const loadBookingsFromCacheOrSource = async (reason) => {
-  const refreshResult = await refreshCacheFromAppsScriptSafely(reason);
-  if (!refreshResult?.ok) {
-    const error = new Error('Failed to refresh bookings from Apps Script.');
-    error.status = refreshResult?.status || 502;
-    throw error;
-  }
-
-  const parsed = parseJsonSafely(refreshResult.rawText || refreshResult.text);
-  return dedupeAndSortBookings(extractBookings(parsed));
-};
-
-const updateReservationInCache = async (lookup, updates) => {
-  const cacheRecord = await readCacheRecord();
-  if (!cacheRecord.payload) return false;
-
-  const parsed = parseJsonSafely(cacheRecord.payload);
-  const bookings = dedupeAndSortBookings(extractBookings(parsed));
-  const matchIndex = findMatchingBookingIndex(bookings, lookup);
-  if (matchIndex < 0) return false;
-
-  const next = [...bookings];
-  const current = next[matchIndex];
-  next[matchIndex] = {
-    ...current,
-    date: updates.date || current.date,
-    time: normalizeText(updates.time || current.time)
-  };
-
-  await writeCacheRecord({
-    updatedAt: new Date().toISOString(),
-    payload: toCanonicalPayload(next)
-  });
-  return true;
-};
-
-const deleteReservationFromCache = async (lookup) => {
-  const cacheRecord = await readCacheRecord();
-  if (!cacheRecord.payload) return false;
-
-  const parsed = parseJsonSafely(cacheRecord.payload);
-  const bookings = dedupeAndSortBookings(extractBookings(parsed));
-  const matchIndex = findMatchingBookingIndex(bookings, lookup);
-  if (matchIndex < 0) return false;
-
-  const next = bookings.filter((_, index) => index !== matchIndex);
-  await writeCacheRecord({
-    updatedAt: new Date().toISOString(),
-    payload: toCanonicalPayload(next)
-  });
-  return true;
-};
-
-const fetchBookingsFromAppsScript = async () => {
+const fetchBookingsFromAppsScript = async (year = DEFAULT_BOOKING_CACHE_YEAR) => {
+  const normalizedYear = normalizeBookingYear(year);
   const readUrl = new URL(process.env.APPS_SCRIPT_URL);
   readUrl.searchParams.set('token', process.env.APPS_SCRIPT_GET_TOKEN);
+  readUrl.searchParams.set('year', String(normalizedYear));
 
   const response = await fetch(readUrl.toString(), {
     method: 'GET',
@@ -1212,8 +1116,9 @@ const postToAppsScript = async (body) => {
   };
 };
 
-const refreshCacheFromAppsScript = async () => {
-  const result = await fetchBookingsFromAppsScript();
+const refreshCacheFromAppsScript = async (year = DEFAULT_BOOKING_CACHE_YEAR) => {
+  const normalizedYear = normalizeBookingYear(year);
+  const result = await fetchBookingsFromAppsScript(normalizedYear);
   if (!result.ok) {
     return result;
   }
@@ -1223,7 +1128,7 @@ const refreshCacheFromAppsScript = async () => {
     await writeCacheRecord({
       updatedAt: new Date().toISOString(),
       payload: result.text
-    });
+    }, normalizedYear);
     return {
       ...result,
       text: result.text,
@@ -1232,7 +1137,7 @@ const refreshCacheFromAppsScript = async () => {
   }
 
   const incomingBookings = extractBookings(parsed);
-  const existingCacheRecord = await readCacheRecord();
+  const existingCacheRecord = await readCacheRecord(normalizedYear);
   const existingParsed = existingCacheRecord.payload ? parseJsonSafely(existingCacheRecord.payload) : null;
   const existingBookings = existingParsed ? extractBookings(existingParsed) : [];
   const existingLooseMap = new Map();
@@ -1252,7 +1157,7 @@ const refreshCacheFromAppsScript = async () => {
   await writeCacheRecord({
     updatedAt: new Date().toISOString(),
     payload: canonicalPayload
-  });
+  }, normalizedYear);
 
   return {
     ...result,
@@ -1261,29 +1166,35 @@ const refreshCacheFromAppsScript = async () => {
   };
 };
 
-const refreshCacheFromAppsScriptSafely = async (reason) => {
-  if (refreshInFlight) {
-    return refreshInFlight;
+const refreshCacheFromAppsScriptSafely = async (
+  reason,
+  year = DEFAULT_BOOKING_CACHE_YEAR
+) => {
+  const normalizedYear = normalizeBookingYear(year);
+  const inFlight = refreshInFlightByYear.get(normalizedYear);
+  if (inFlight) {
+    return inFlight;
   }
 
-  refreshInFlight = (async () => {
+  const nextInFlight = (async () => {
     try {
-      const refreshResult = await refreshCacheFromAppsScript();
+      const refreshResult = await refreshCacheFromAppsScript(normalizedYear);
       if (!refreshResult.ok) {
-        console.error(`Cache refresh failed (${reason}):`, refreshResult.status);
+        console.error(`Cache refresh failed (${reason}, year=${normalizedYear}):`, refreshResult.status);
       } else {
-        console.log(`Cache refreshed (${reason}).`);
+        console.log(`Cache refreshed (${reason}, year=${normalizedYear}).`);
       }
       return refreshResult;
     } catch (error) {
-      console.error(`Cache refresh error (${reason}):`, error);
+      console.error(`Cache refresh error (${reason}, year=${normalizedYear}):`, error);
       return null;
     } finally {
-      refreshInFlight = null;
+      refreshInFlightByYear.delete(normalizedYear);
     }
   })();
 
-  return refreshInFlight;
+  refreshInFlightByYear.set(normalizedYear, nextInFlight);
+  return nextInFlight;
 };
 
 const buildMenuScriptUrl = (action, params = {}) => {
@@ -1454,7 +1365,7 @@ app.post(['/generate', '/api/generate'], async (req, res) => {
   }
 });
 
-app.get('/api/bookings', async (_req, res) => {
+app.get('/api/bookings', async (req, res) => {
   if (!hasAllRequiredEnv()) {
     return res
       .status(500)
@@ -1462,7 +1373,8 @@ app.get('/api/bookings', async (_req, res) => {
   }
 
   try {
-    const cacheRecord = await readCacheRecord();
+    const requestedYear = normalizeBookingYear(req.query.year, DEFAULT_BOOKING_CACHE_YEAR);
+    const cacheRecord = await readCacheRecord(requestedYear);
     if (cacheRecord.payload) {
       const parsedCachedPayload = parseJsonSafely(cacheRecord.payload);
       if (parsedCachedPayload !== null) {
@@ -1471,26 +1383,29 @@ app.get('/api/bookings', async (_req, res) => {
           await writeCacheRecord({
             updatedAt: cacheRecord.updatedAt || new Date().toISOString(),
             payload: normalizedPayload
-          });
+          }, requestedYear);
         }
         if (isCacheStale(cacheRecord)) {
-          void refreshCacheFromAppsScriptSafely('stale-get');
+          void refreshCacheFromAppsScriptSafely('stale-get', requestedYear);
         }
         res.setHeader('X-Bookings-Source', 'cache-file');
+        res.setHeader('X-Bookings-Year', String(requestedYear));
         return res.status(200).type('application/json').send(normalizedPayload);
       }
 
-      const refreshResult = await refreshCacheFromAppsScriptSafely('invalid-cache-get');
+      const refreshResult = await refreshCacheFromAppsScriptSafely('invalid-cache-get', requestedYear);
       if (refreshResult?.ok) {
         res.setHeader('X-Bookings-Source', 'apps-script');
+        res.setHeader('X-Bookings-Year', String(requestedYear));
         return res.status(200).type('application/json').send(refreshResult.text);
       }
       return res.status(500).json({ error: 'Failed to load bookings.' });
     }
 
-    const refreshResult = await refreshCacheFromAppsScriptSafely('cache-empty-get');
+    const refreshResult = await refreshCacheFromAppsScriptSafely('cache-empty-get', requestedYear);
     if (refreshResult?.ok) {
       res.setHeader('X-Bookings-Source', 'apps-script');
+      res.setHeader('X-Bookings-Year', String(requestedYear));
       return res.status(200).type('application/json').send(refreshResult.text);
     }
 
@@ -1504,7 +1419,7 @@ app.get('/api/bookings', async (_req, res) => {
   }
 });
 
-const handleBookingsRefresh = async (_req, res) => {
+const handleBookingsRefresh = async (req, res) => {
   if (!hasAllRequiredEnv()) {
     return res
       .status(500)
@@ -1512,7 +1427,8 @@ const handleBookingsRefresh = async (_req, res) => {
   }
 
   try {
-    const refreshResult = await refreshCacheFromAppsScriptSafely('manual-refresh');
+    const requestedYear = normalizeBookingYear(req.query.year, DEFAULT_BOOKING_CACHE_YEAR);
+    const refreshResult = await refreshCacheFromAppsScriptSafely('manual-refresh', requestedYear);
     if (!refreshResult?.ok) {
       return res
         .status(refreshResult?.status || 500)
@@ -1525,6 +1441,7 @@ const handleBookingsRefresh = async (_req, res) => {
     return res.status(200).json({
       ok: true,
       message: 'Bookings cache refreshed from Google Sheets.',
+      year: requestedYear,
       bookingsCount: bookings.length,
       bookings
     });
@@ -1548,11 +1465,13 @@ app.post('/api/bookings', async (req, res) => {
     const result = await postToAppsScript(req.body || {});
     if (result.ok) {
       try {
-        const parsedResult = parseJsonSafely(result.text) || {};
-        await appendBookingToCache(req.body || {}, parsedResult);
-        void refreshCacheFromAppsScriptSafely('post-reconcile');
+        await Promise.all(
+          BOOKING_CACHE_YEARS.map((year) =>
+            refreshCacheFromAppsScriptSafely(`post-reconcile`, year)
+          )
+        );
       } catch (cacheError) {
-        console.error('Cache append after POST failed:', cacheError);
+        console.error('Cache refresh after POST failed:', cacheError);
       }
     }
     res.status(result.ok ? 200 : result.status).type('application/json').send(result.text);
@@ -1879,12 +1798,16 @@ if (fs.existsSync(indexHtmlPath)) {
 const PORT = process.env.PORT || 8080;
 
 logSecretPreviews();
-Promise.all([ensureCacheFile(), ensureMenuCacheFile()])
+Promise.all([ensureBookingCacheFiles(), ensureMenuCacheFile()])
   .then(async () => {
     if (hasAllRequiredEnv()) {
-      void refreshCacheFromAppsScriptSafely('startup');
+      for (const year of BOOKING_CACHE_YEARS) {
+        void refreshCacheFromAppsScriptSafely('startup', year);
+      }
       setInterval(() => {
-        void refreshCacheFromAppsScriptSafely('interval');
+        for (const year of BOOKING_CACHE_YEARS) {
+          void refreshCacheFromAppsScriptSafely('interval', year);
+        }
       }, backgroundRefreshIntervalMs);
     }
   })

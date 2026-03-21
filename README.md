@@ -4,16 +4,29 @@ Small Express service intended to run on Google Cloud Run.
 
 It proxies browser/app requests to a Google Apps Script web app that reads/writes bookings in Google Sheets.
 
+## Documentation
+
+Comprehensive technical documentation is available in [`docs/`](./docs/README.md):
+
+- architecture
+- API reference
+- configuration
+- data/cache models
+- operations
+- security notes
+- code map
+- cleanup audit
+
 ## Endpoints
 
 - `GET /`  
   Returns `{"status":"ok"}` if no frontend build is present.
 - `GET /api/bookings`  
-  Returns cached bookings from local `cache.json` with public fields only: `date`, `programType`, `time`.  
-  If cache is empty, it reads from Apps Script once and seeds `cache.json`.
+  Returns cached bookings for the requested year with public fields only: `date`, `programType`, `time`.  
+  Optional query param: `?year=2026` or `?year=2027` (default: `2026`).
 - `POST /api/bookings`  
   Forwards JSON to your Apps Script `APPS_SCRIPT_URL` with `token: APPS_SCRIPT_POST_TOKEN` merged into the body.  
-  On successful write, appends/updates `cache.json` directly from the POST payload.
+  On successful write, refreshes both `2026` and `2027` bookings caches from Apps Script.
 - `POST /api/reservations/verify`  
   Verifies whether a reservation exists for the provided `confirmationNumber`.
   On success, returns `{"message":"Booking Exists","booking":{...}}` with booking details from Apps Script.
@@ -75,7 +88,7 @@ At startup the server logs a safe preview of the configured secrets (first 4 cha
 
 ## Booking Cache File
 
-This service stores booking data in `cache.json` in the service root:
+This service stores booking data in year-specific files in the service root:
 
 ```json
 {
@@ -86,8 +99,11 @@ This service stores booking data in `cache.json` in the service root:
 
 Notes:
 
-- `GET /api/bookings` serves from this file for fast responses.
-- After successful `POST /api/bookings`, cache is updated directly from submitted payload (no full-sheet re-fetch).
+- Files:
+  - `cache_2026.json`
+  - `cache_2027.json`
+- `GET /api/bookings?year=YYYY` serves from the matching year file for fast responses.
+- After successful `POST /api/bookings`, both year caches are refreshed from Apps Script.
 - Cache stores public booking records only: `date`, `programType`, and `time`.
 - Cache is also reconciled from Apps Script in the background (startup + interval) so manual Google Sheet edits are reflected.
 
@@ -128,7 +144,8 @@ Quick checks:
 
 ```powershell
 curl.exe -i http://localhost:8080/
-curl.exe -i http://localhost:8080/api/bookings
+curl.exe -i "http://localhost:8080/api/bookings?year=2026"
+curl.exe -i "http://localhost:8080/api/bookings?year=2027"
 ```
 
 Local bookings-only workflow:
