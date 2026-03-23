@@ -17,9 +17,7 @@ Default local base URL:
 curl.exe -i http://localhost:8080/
 curl.exe -i "http://localhost:8080/api/bookings?year=2026"
 curl.exe -i "http://localhost:8080/api/bookings?year=2027"
-curl.exe -i -X POST http://localhost:8080/api/reservations/verify `
-  -H "Content-Type: application/json" `
-  -d "{\"confirmationNumber\":\"12345678\"}"
+curl.exe -i "http://localhost:8080/api/reservations/verify?confirmationNumber=12345678"
 ```
 
 ## Cloud Run Deployment Notes

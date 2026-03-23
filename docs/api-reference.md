@@ -35,13 +35,15 @@
 
 ## Reservations
 
-### `POST /api/reservations/verify`
+### `GET /api/reservations/verify`
 
-- Required body:
+- Required query param:
   - `confirmationNumber`
 - Behavior:
   - Calls Apps Script with `token` + `confirmation`.
   - Returns details when found.
+- Backward compatibility:
+  - `POST /api/reservations/verify` with body `confirmationNumber` is still accepted.
 - Success example:
   - `{ "message": "Booking Exists", "booking": { ... } }`
 - Not found:

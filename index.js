@@ -1481,7 +1481,7 @@ app.post('/api/bookings', async (req, res) => {
   }
 });
 
-app.post('/api/reservations/verify', async (req, res) => {
+const handleReservationVerify = async (req, res) => {
   if (!hasAllRequiredEnv()) {
     return res
       .status(500)
@@ -1489,8 +1489,13 @@ app.post('/api/reservations/verify', async (req, res) => {
   }
 
   try {
+    const query = req.query || {};
     const body = req.body || {};
     const rawConfirmation =
+      query.confirmationNumber ||
+      query.confirmation ||
+      query['Confirmation Number'] ||
+      query['confirmation number'] ||
       body.confirmationNumber ||
       body.confirmation ||
       body['Confirmation Number'] ||
@@ -1499,7 +1504,7 @@ app.post('/api/reservations/verify', async (req, res) => {
     const confirmationNumber = normalizeConfirmation(rawConfirmation);
     if (!isKnownValue(confirmationNumber)) {
       return res.status(400).json({
-        error: 'confirmationNumber is required.'
+        error: 'confirmationNumber query parameter is required.'
       });
     }
 
@@ -1524,7 +1529,10 @@ app.post('/api/reservations/verify', async (req, res) => {
     console.error('Reservation verify error:', error);
     return res.status(500).json({ error: 'Failed to verify reservation.' });
   }
-});
+};
+
+app.get('/api/reservations/verify', handleReservationVerify);
+app.post('/api/reservations/verify', handleReservationVerify);
 
 app.post('/api/reservations/update', async (req, res) => {
   if (!hasAllRequiredEnv()) {

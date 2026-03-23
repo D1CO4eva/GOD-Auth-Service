@@ -27,8 +27,9 @@ Comprehensive technical documentation is available in [`docs/`](./docs/README.md
 - `POST /api/bookings`  
   Forwards JSON to your Apps Script `APPS_SCRIPT_URL` with `token: APPS_SCRIPT_POST_TOKEN` merged into the body.  
   On successful write, refreshes both `2026` and `2027` bookings caches from Apps Script.
-- `POST /api/reservations/verify`  
-  Verifies whether a reservation exists for the provided `confirmationNumber`.
+- `GET /api/reservations/verify?confirmationNumber=...`  
+  Verifies whether a reservation exists for the provided `confirmationNumber` query parameter.
+  (`POST /api/reservations/verify` with body is also accepted for backward compatibility.)
   On success, returns `{"message":"Booking Exists","booking":{...}}` with booking details from Apps Script.
 - `POST /api/reservations/update`  
   Updates a reservation using `confirmationNumber` (required) and `newDate` (required; optional `newTime`).
