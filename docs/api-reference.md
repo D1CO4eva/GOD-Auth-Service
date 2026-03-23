@@ -42,8 +42,8 @@
 - Behavior:
   - Calls Apps Script with `token` + `confirmation`.
   - Returns details when found.
-- Backward compatibility:
-  - `POST /api/reservations/verify` with body `confirmationNumber` is still accepted.
+- Method restrictions:
+  - `POST /api/reservations/verify` returns `405 Method Not Allowed`.
 - Success example:
   - `{ "message": "Booking Exists", "booking": { ... } }`
 - Not found:

@@ -1490,16 +1490,8 @@ const handleReservationVerify = async (req, res) => {
 
   try {
     const query = req.query || {};
-    const body = req.body || {};
     const rawConfirmation =
       query.confirmationNumber ||
-      query.confirmation ||
-      query['Confirmation Number'] ||
-      query['confirmation number'] ||
-      body.confirmationNumber ||
-      body.confirmation ||
-      body['Confirmation Number'] ||
-      body['confirmation number'] ||
       '';
     const confirmationNumber = normalizeConfirmation(rawConfirmation);
     if (!isKnownValue(confirmationNumber)) {
@@ -1532,7 +1524,11 @@ const handleReservationVerify = async (req, res) => {
 };
 
 app.get('/api/reservations/verify', handleReservationVerify);
-app.post('/api/reservations/verify', handleReservationVerify);
+app.post('/api/reservations/verify', (_req, res) => {
+  return res.status(405).json({
+    error: 'Method not allowed. Use GET /api/reservations/verify?confirmationNumber=...'
+  });
+});
 
 app.post('/api/reservations/update', async (req, res) => {
   if (!hasAllRequiredEnv()) {

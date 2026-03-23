@@ -29,7 +29,7 @@ Comprehensive technical documentation is available in [`docs/`](./docs/README.md
   On successful write, refreshes both `2026` and `2027` bookings caches from Apps Script.
 - `GET /api/reservations/verify?confirmationNumber=...`  
   Verifies whether a reservation exists for the provided `confirmationNumber` query parameter.
-  (`POST /api/reservations/verify` with body is also accepted for backward compatibility.)
+  `POST /api/reservations/verify` is not supported for verification and returns `405`.
   On success, returns `{"message":"Booking Exists","booking":{...}}` with booking details from Apps Script.
 - `POST /api/reservations/update`  
   Updates a reservation using `confirmationNumber` (required) and `newDate` (required; optional `newTime`).
