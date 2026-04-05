@@ -26,7 +26,8 @@ Comprehensive technical documentation is available in [`docs/`](./docs/README.md
   Optional query param: `?year=2026` or `?year=2027` (default: `2026`).
 - `POST /api/bookings`  
   Forwards JSON to your Apps Script `APPS_SCRIPT_URL` with `token: APPS_SCRIPT_POST_TOKEN` merged into the body.  
-  On successful write, refreshes both `2026` and `2027` bookings caches from Apps Script.
+  On successful write, refreshes both `2026` and `2027` bookings caches from Apps Script.  
+  If Apps Script rejects the booking POST with `403`, the service attempts to send an admin alert email with the host name, host email, and host phone number.
 - `GET /api/reservations/verify?confirmationNumber=...`  
   Verifies whether a reservation exists for the provided `confirmationNumber` query parameter.
   `POST /api/reservations/verify` is not supported for verification and returns `405`.
@@ -84,6 +85,24 @@ Optional:
   Default: `300` seconds.
 - `MENU_SCRIPT_TOKEN`  
   Optional shared token for menu Apps Script POST calls.
+- `GMAIL_PASSWORD`  
+  Gmail app password for `atlnd.admin.support@gmail.com`. Required to send booking failure alerts.
+- `GMAIL_USER`  
+  Optional SMTP login account. Defaults to `atlnd.admin.support@gmail.com`.
+- `BOOKING_ALERT_SMTP_PASS`  
+  Legacy alias for `GMAIL_PASSWORD`.
+- `BOOKING_ALERT_TO_EMAIL`  
+  Optional override for the admin recipient. Defaults to `atlantanamadwaar@gmail.com`.
+- `BOOKING_ALERT_FROM_EMAIL`  
+  Optional override for the sender address. Defaults to `atlnd.admin.support@gmail.com`.
+- `BOOKING_ALERT_SMTP_USER`  
+  Optional override for SMTP auth username. Defaults to the sender address.
+- `BOOKING_ALERT_SMTP_HOST`  
+  Optional override for SMTP host. Defaults to `smtp.gmail.com`.
+- `BOOKING_ALERT_SMTP_PORT`  
+  Optional override for SMTP port. Defaults to `465`.
+- `BOOKING_ALERT_SMTP_SECURE`  
+  Optional override for SMTP TLS mode. Defaults to `true` when using port `465`.
 
 At startup the server logs a safe preview of the configured secrets (first 4 chars and last 4 chars).
 
@@ -133,6 +152,7 @@ $env:APPS_SCRIPT_URL="https://script.google.com/macros/s/XXX/exec"
 $env:APPS_SCRIPT_GET_TOKEN="..."
 $env:APPS_SCRIPT_POST_TOKEN="..."
 $env:MENU_SCRIPT_URL="https://script.google.com/macros/s/YYY/exec"
+$env:GMAIL_PASSWORD="gmail-app-password"
 # Optional:
 # $env:MENU_SCRIPT_TOKEN="..."
 # $env:OPENROUTER_API_KEY="..."

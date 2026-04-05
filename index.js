@@ -1,6 +1,7 @@
 import express from 'express';
 import fs from 'fs';
 import fsPromises from 'fs/promises';
+import nodemailer from 'nodemailer';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -88,6 +89,31 @@ const REQUIRED_ENV_KEYS = [
 const MENU_REQUIRED_ENV_KEYS = ['MENU_SCRIPT_URL'];
 const OPENROUTER_REQUIRED_ENV_KEYS = ['OPENROUTER_API_KEY'];
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const DEFAULT_BOOKING_ALERT_TO_EMAIL = 'atlantanamadwaar@gmail.com';
+const DEFAULT_BOOKING_ALERT_FROM_EMAIL = 'atlnd.admin.support@gmail.com';
+const BOOKING_ALERT_TO_EMAIL =
+  process.env.BOOKING_ALERT_TO_EMAIL || DEFAULT_BOOKING_ALERT_TO_EMAIL;
+const BOOKING_ALERT_FROM_EMAIL =
+  process.env.BOOKING_ALERT_FROM_EMAIL || DEFAULT_BOOKING_ALERT_FROM_EMAIL;
+const BOOKING_ALERT_SMTP_USER =
+  process.env.GMAIL_USER || process.env.BOOKING_ALERT_SMTP_USER || BOOKING_ALERT_FROM_EMAIL;
+const BOOKING_ALERT_SMTP_PASS =
+  process.env.GMAIL_PASSWORD || process.env.BOOKING_ALERT_SMTP_PASS || '';
+const BOOKING_ALERT_SMTP_HOST = process.env.BOOKING_ALERT_SMTP_HOST || 'smtp.gmail.com';
+const BOOKING_ALERT_SMTP_PORT = (() => {
+  const parsed = Number.parseInt(process.env.BOOKING_ALERT_SMTP_PORT || '465', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 465;
+})();
+const BOOKING_ALERT_SMTP_SECURE = (() => {
+  const normalized = String(process.env.BOOKING_ALERT_SMTP_SECURE || '')
+    .trim()
+    .toLowerCase();
+  if (!normalized) return BOOKING_ALERT_SMTP_PORT === 465;
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return BOOKING_ALERT_SMTP_PORT === 465;
+})();
+let bookingAlertTransporter = null;
 
 const previewSecret = (value) => {
   if (!value) return '(missing)';
@@ -95,6 +121,7 @@ const previewSecret = (value) => {
   const n = Math.min(4, s.length);
   return `${s.slice(0, n)}...${s.slice(-n)}`;
 };
+const looksLikeGoogleAppPassword = (value) => /^[a-z]{16}$/i.test(normalizeText(value).replace(/\s+/g, ''));
 
 const missingRequiredEnv = () => REQUIRED_ENV_KEYS.filter((k) => !process.env[k]);
 const hasAllRequiredEnv = () => missingRequiredEnv().length === 0;
@@ -102,6 +129,12 @@ const missingMenuEnv = () => MENU_REQUIRED_ENV_KEYS.filter((k) => !process.env[k
 const hasAllMenuEnv = () => missingMenuEnv().length === 0;
 const missingOpenRouterEnv = () => OPENROUTER_REQUIRED_ENV_KEYS.filter((k) => !process.env[k]);
 const hasAllOpenRouterEnv = () => missingOpenRouterEnv().length === 0;
+const missingBookingAlertEnv = () => {
+  const missing = [];
+  if (!BOOKING_ALERT_SMTP_PASS) missing.push('GMAIL_PASSWORD');
+  return missing;
+};
+const hasBookingAlertEmailConfig = () => missingBookingAlertEnv().length === 0;
 
 const logSecretPreviews = (label = 'Secret previews') => {
   console.log(
@@ -112,9 +145,20 @@ const logSecretPreviews = (label = 'Secret previews') => {
       `APPS_SCRIPT_POST_TOKEN=${previewSecret(process.env.APPS_SCRIPT_POST_TOKEN)}`,
       `MENU_SCRIPT_URL=${previewSecret(process.env.MENU_SCRIPT_URL)}`,
       `MENU_SCRIPT_TOKEN=${previewSecret(process.env.MENU_SCRIPT_TOKEN)}`,
-      `OPENROUTER_API_KEY=${previewSecret(process.env.OPENROUTER_API_KEY)}`
+      `OPENROUTER_API_KEY=${previewSecret(process.env.OPENROUTER_API_KEY)}`,
+      `BOOKING_ALERT_SMTP_PASS=${previewSecret(BOOKING_ALERT_SMTP_PASS)}`
     ].join(' ')
   );
+  if (
+    BOOKING_ALERT_SMTP_HOST === 'smtp.gmail.com' &&
+    BOOKING_ALERT_SMTP_PASS &&
+    !looksLikeGoogleAppPassword(BOOKING_ALERT_SMTP_PASS)
+  ) {
+    console.warn(
+      'Gmail SMTP warning: GMAIL_PASSWORD does not look like a Google app password. ' +
+        'Use an app password created for the sending account, not the normal Gmail sign-in password.'
+    );
+  }
 };
 
 const normalizeCacheRecord = (value) => {
@@ -501,6 +545,156 @@ const pickPreferredKnownValue = (values) => {
     if (isKnownValue(value)) return value;
   }
   return list.find((value) => value !== undefined && value !== null) ?? '';
+};
+const normalizeFieldAlias = (value) =>
+  normalizeText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+const collectFieldMapValuesByAliases = (fieldMap, aliases, options = {}) => {
+  const normalizedAliases = (aliases || []).map(normalizeFieldAlias).filter(Boolean);
+  const excludeAliases = (options.excludeAliases || [])
+    .map(normalizeFieldAlias)
+    .filter(Boolean);
+  if (!normalizedAliases.length) return [];
+
+  const preferred = [];
+  const fallback = [];
+  for (const [rawKey, rawValue] of Object.entries(fieldMap || {})) {
+    const normalizedKey = normalizeFieldAlias(rawKey);
+    if (!normalizedKey) continue;
+    if (excludeAliases.some((alias) => normalizedKey.includes(alias))) continue;
+
+    const isExact = normalizedAliases.some((alias) => normalizedKey === alias);
+    const isLoose = normalizedAliases.some(
+      (alias) => normalizedKey.endsWith(alias) || normalizedKey.includes(alias)
+    );
+    if (!isExact && !isLoose) continue;
+
+    if (isExact) {
+      preferred.push(rawValue);
+      continue;
+    }
+    fallback.push(rawValue);
+  }
+
+  return [...preferred, ...fallback];
+};
+const extractBookingAlertDetails = (body) => {
+  const source = body && typeof body === 'object' ? body : {};
+  const fieldMap = flattenObjectToFieldMap(source);
+  const hostName = normalizeMaybeUnknown(
+    pickPreferredKnownValue([
+      source['Host Name'],
+      source['host name'],
+      source.hostName,
+      source.hostname,
+      ...collectFieldMapValuesByAliases(fieldMap, ['host name', 'hostname'])
+    ]),
+    'N/A'
+  );
+  const email = normalizeMaybeUnknown(
+    pickPreferredKnownValue([
+      source['Host email'],
+      source['Host Email'],
+      source['host email'],
+      source.hostEmail,
+      source.email,
+      source.Email,
+      ...collectFieldMapValuesByAliases(fieldMap, ['host email', 'hostemail'], {
+        excludeAliases: ['current email', 'currentemail']
+      }),
+      ...collectFieldMapValuesByAliases(fieldMap, ['email', 'email address', 'emailaddress'], {
+        excludeAliases: ['current email', 'currentemail']
+      })
+    ]),
+    'N/A'
+  );
+  const phone = normalizeMaybeUnknown(
+    pickPreferredKnownValue([
+      source['Host Phone Number'],
+      source['Host Phone'],
+      source['host phone number'],
+      source.hostPhoneNumber,
+      source.hostPhone,
+      source.phoneNumber,
+      source.phone,
+      ...collectFieldMapValuesByAliases(fieldMap, [
+        'host phone number',
+        'host phone',
+        'hostphonenumber',
+        'hostphone'
+      ]),
+      ...collectFieldMapValuesByAliases(fieldMap, [
+        'phone number',
+        'phonenumber',
+        'phone',
+        'mobile number',
+        'mobilenumber',
+        'mobile'
+      ])
+    ]),
+    'N/A'
+  );
+  const date = normalizeMaybeUnknown(
+    pickPreferredKnownValue([
+      source.Date,
+      source.date,
+      source['Program Date'],
+      source.programDate,
+      source['New Date'],
+      source.newDate,
+      ...collectFieldMapValuesByAliases(fieldMap, ['date', 'program date'], {
+        excludeAliases: ['current date', 'currentdate']
+      })
+    ]),
+    'N/A'
+  );
+  const time = normalizeMaybeUnknown(
+    pickPreferredKnownValue([
+      source.Time,
+      source.time,
+      source['Time Slot'],
+      source.timeSlot,
+      source['New Time'],
+      source.newTime,
+      ...collectFieldMapValuesByAliases(fieldMap, ['time', 'time slot', 'timeslot'], {
+        excludeAliases: ['current time', 'currenttime']
+      })
+    ]),
+    'N/A'
+  );
+  const programType = normalizeMaybeUnknown(
+    pickPreferredKnownValue([
+      source['Type of Program'],
+      source['Program Type'],
+      source.programType,
+      source.type,
+      ...collectFieldMapValuesByAliases(fieldMap, [
+        'type of program',
+        'program type',
+        'programtype'
+      ])
+    ]),
+    'N/A'
+  );
+  const occasion = normalizeMaybeUnknown(
+    pickPreferredKnownValue([
+      source.Occasion,
+      source.occasion,
+      ...collectFieldMapValuesByAliases(fieldMap, ['occasion'])
+    ]),
+    'N/A'
+  );
+
+  return {
+    hostName,
+    email,
+    phone,
+    date,
+    time,
+    programType,
+    occasion
+  };
 };
 const buildPublicBookingFields = (fieldMap) => {
   const next = {};
@@ -1116,6 +1310,143 @@ const postToAppsScript = async (body) => {
   };
 };
 
+const isFalseLikeValue = (value) =>
+  value === false ||
+  (typeof value === 'string' && value.trim().toLowerCase() === 'false');
+
+const analyzeBookingPostResult = (result) => {
+  const parsed = parseJsonSafely(result?.text || '');
+  if (!result?.ok) {
+    return {
+      shouldAlert: true,
+      shouldRefreshCache: false,
+      status: result?.status || 500,
+      reason:
+        result?.status === 403
+          ? 'Apps Script rejected booking POST with 403.'
+          : `Apps Script booking POST failed with HTTP ${result?.status || 500}.`,
+      responseText: result?.text || '',
+      parsed
+    };
+  }
+
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && isFalseLikeValue(parsed.success)) {
+    const message = normalizeMaybeUnknown(parsed.message, 'Apps Script returned success:false.');
+    return {
+      shouldAlert: true,
+      shouldRefreshCache: false,
+      status: result?.status || 200,
+      reason: `Apps Script returned success:false. ${message}`,
+      responseText: result?.text || '',
+      parsed
+    };
+  }
+
+  return {
+    shouldAlert: false,
+    shouldRefreshCache: Boolean(result?.ok),
+    status: result?.status || 200,
+    reason: '',
+    responseText: result?.text || '',
+    parsed
+  };
+};
+
+const isGmailAuthFailure = (error) =>
+  error &&
+  typeof error === 'object' &&
+  error.code === 'EAUTH' &&
+  Number(error.responseCode) === 535;
+
+const logBookingAlertEmailError = (error) => {
+  if (isGmailAuthFailure(error)) {
+    console.error(
+      [
+        'Booking failure alert email error: Gmail rejected the SMTP login.',
+        `SMTP user: ${previewSecret(BOOKING_ALERT_SMTP_USER)}`,
+        'Fix: create a Google app password for the sending account,',
+        'set GMAIL_PASSWORD to that app password, and ensure the SMTP user matches the same Gmail account.',
+        'Do not use the normal Gmail account password here.'
+      ].join(' ')
+    );
+    return;
+  }
+  console.error('Booking failure alert email error:', error);
+};
+
+const getBookingAlertTransporter = () => {
+  if (!bookingAlertTransporter) {
+    bookingAlertTransporter = nodemailer.createTransport({
+      host: BOOKING_ALERT_SMTP_HOST,
+      port: BOOKING_ALERT_SMTP_PORT,
+      secure: BOOKING_ALERT_SMTP_SECURE,
+      auth: {
+        user: BOOKING_ALERT_SMTP_USER,
+        pass: BOOKING_ALERT_SMTP_PASS
+      },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 15000
+    });
+  }
+  return bookingAlertTransporter;
+};
+
+const sendBookingFailureAlert = async (req, failureContext = {}) => {
+  if (!hasBookingAlertEmailConfig()) {
+    console.warn(
+      'Booking failure alert skipped; missing email config:',
+      missingBookingAlertEnv().join(', ')
+    );
+    return { ok: false, skipped: true };
+  }
+
+  const details = extractBookingAlertDetails(req.body || {});
+  const responseText = normalizeText(failureContext.responseText || '').slice(0, 4000);
+  const errorMessage = normalizeText(failureContext.errorMessage || '').slice(0, 2000);
+  const subjectStatus = failureContext.status ? `status ${failureContext.status}` : 'request error';
+  const lines = [
+    'A booking attempt could not be written to Google Apps Script.',
+    '',
+    `Failure Reason: ${normalizeMaybeUnknown(failureContext.reason, 'Booking POST failed')}`,
+    `Apps Script Result: ${subjectStatus}`,
+    `Alert Time: ${new Date().toISOString()}`,
+    `API Path: ${normalizeText(req.originalUrl || req.url) || '/api/bookings'}`,
+    `Origin: ${normalizeMaybeUnknown(req.headers.origin, 'N/A')}`,
+    `Forwarded For: ${normalizeMaybeUnknown(req.headers['x-forwarded-for'], 'N/A')}`,
+    `Request IP: ${normalizeMaybeUnknown(req.ip, 'N/A')}`,
+    '',
+    'Booking Contact',
+    `Host Name: ${details.hostName}`,
+    `Host Email: ${details.email}`,
+    `Host Phone Number: ${details.phone}`,
+    '',
+    'Booking Details',
+    `Date: ${details.date}`,
+    `Time: ${details.time}`,
+    `Program Type: ${details.programType}`,
+    `Occasion: ${details.occasion}`
+  ];
+
+  if (errorMessage) {
+    lines.push('', 'Error', errorMessage);
+  }
+
+  if (responseText) {
+    lines.push('', 'Apps Script Response', responseText);
+  }
+
+  const info = await getBookingAlertTransporter().sendMail({
+    from: `Atlanta Booking Alerts <${BOOKING_ALERT_FROM_EMAIL}>`,
+    to: BOOKING_ALERT_TO_EMAIL,
+    replyTo: isKnownValue(details.email) ? details.email : undefined,
+    subject: `Booking fallback alert (${subjectStatus})`,
+    text: lines.join('\n')
+  });
+
+  return { ok: true, messageId: info.messageId };
+};
+
 const refreshCacheFromAppsScript = async (year = DEFAULT_BOOKING_CACHE_YEAR) => {
   const normalizedYear = normalizeBookingYear(year);
   const result = await fetchBookingsFromAppsScript(normalizedYear);
@@ -1463,7 +1794,19 @@ app.post('/api/bookings', async (req, res) => {
 
   try {
     const result = await postToAppsScript(req.body || {});
-    if (result.ok) {
+    const bookingPostAnalysis = analyzeBookingPostResult(result);
+    if (bookingPostAnalysis.shouldAlert) {
+      try {
+        await sendBookingFailureAlert(req, {
+          status: bookingPostAnalysis.status,
+          reason: bookingPostAnalysis.reason,
+          responseText: bookingPostAnalysis.responseText
+        });
+      } catch (alertError) {
+        logBookingAlertEmailError(alertError);
+      }
+    }
+    if (bookingPostAnalysis.shouldRefreshCache) {
       try {
         await Promise.all(
           BOOKING_CACHE_YEARS.map((year) =>
@@ -1477,6 +1820,15 @@ app.post('/api/bookings', async (req, res) => {
     res.status(result.ok ? 200 : result.status).type('application/json').send(result.text);
   } catch (error) {
     console.error('Write error:', error);
+    try {
+      await sendBookingFailureAlert(req, {
+        status: 500,
+        reason: 'Booking POST failed before Apps Script returned a response.',
+        errorMessage: error instanceof Error ? error.stack || error.message : String(error)
+      });
+    } catch (alertError) {
+      logBookingAlertEmailError(alertError);
+    }
     res.status(500).json({ error: 'Failed to submit booking.' });
   }
 });

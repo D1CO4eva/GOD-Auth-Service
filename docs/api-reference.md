@@ -20,6 +20,11 @@
 
 - Forwards booking write payload to Apps Script with server token.
 - Reconciles cache in background after successful write.
+- If Apps Script rejects the booking POST with `403`, the service attempts to email
+  `atlantanamadwaar@gmail.com` from `atlnd.admin.support@gmail.com` with the host
+  name, host email, and host phone number (plus booking context) when SMTP is configured.
+- The same admin alert is also sent when Apps Script replies with `200` but the JSON
+  payload explicitly contains `success: false`.
 
 ### `GET|POST /api/bookings/refresh` and `/bookings/refresh`
 

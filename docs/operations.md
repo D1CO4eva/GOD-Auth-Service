@@ -37,5 +37,7 @@ curl.exe -i "http://localhost:8080/api/reservations/verify?confirmationNumber=12
 ## Failure Handling
 
 - Upstream Apps Script failures produce propagated/non-200 responses depending on route.
+- `POST /api/bookings` attempts an admin alert email when the upstream booking write
+  returns `403`, and also on transport-level booking write failures.
 - Reservation verify can return 502 when upstream verification fails.
 - Menu and generate routes return explicit 500 class responses on missing config/failures.

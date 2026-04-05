@@ -17,6 +17,8 @@
 - CORS is not an auth mechanism.
 - Any secret in frontend JavaScript is exposed to users.
 - Keep Apps Script tokens server-side only.
+- Keep `BOOKING_ALERT_SMTP_PASS` server-side only. The booking failure alert email
+  includes host contact details and should only go to trusted admins.
 
 ## Recommended Hardening
 
