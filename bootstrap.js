@@ -1,32 +1,12 @@
-import { spawn } from 'child_process';
-import path from 'path';
 import express from 'express';
-import { fileURLToPath } from 'url';
+import { createSbmContextSearchService } from './sbmContextSearch.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const helperPath = path.join(__dirname, 'scripts', 'sbm_context_search.py');
 const routePrefix = '/sbm/context-search';
-const helperPythonBin =
-  String(process.env.SBM_CONTEXT_SEARCH_PYTHON_BIN || '').trim() ||
-  (process.platform === 'win32' ? 'python' : 'python3');
-const helperTimeoutMs = (() => {
-  const parsed = Number.parseInt(process.env.SBM_CONTEXT_SEARCH_TIMEOUT_MS || '180000', 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 180000;
-})();
 const registrationFlag = Symbol.for('sbm-context-search-registered');
 
 const normalizeText = (value) => {
   if (value === null || value === undefined) return '';
   return String(value).trim();
-};
-
-const parseJsonSafely = (value) => {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
 };
 
 const isPlainObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -36,69 +16,6 @@ const createHttpError = (status, message) => {
   error.status = status;
   return error;
 };
-
-const runHelper = (action, payload = null) =>
-  new Promise((resolve, reject) => {
-    const child = spawn(helperPythonBin, [helperPath, action], {
-      cwd: __dirname,
-      env: {
-        ...process.env,
-        PYTHONUTF8: '1'
-      },
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-
-    const finalize = (handler, value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeoutId);
-      handler(value);
-    };
-
-    const timeoutId = setTimeout(() => {
-      child.kill();
-      finalize(reject, new Error(`Context search helper timed out after ${helperTimeoutMs}ms.`));
-    }, helperTimeoutMs);
-
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
-    });
-
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
-    });
-
-    child.on('error', (error) => {
-      finalize(reject, error);
-    });
-
-    child.on('close', (code) => {
-      const parsed = parseJsonSafely(stdout);
-      if (isPlainObject(parsed) && 'ok' in parsed && 'status' in parsed) {
-        finalize(resolve, parsed);
-        return;
-      }
-
-      const errorDetails = normalizeText(stderr) || normalizeText(stdout);
-      finalize(
-        reject,
-        new Error(
-          `Context search helper failed with exit code ${code ?? 'unknown'}${
-            errorDetails ? `: ${errorDetails}` : '.'
-          }`
-        )
-      );
-    });
-
-    if (payload !== null && payload !== undefined) {
-      child.stdin.write(JSON.stringify(payload));
-    }
-    child.stdin.end();
-  });
 
 const coerceInteger = (value, fallback, { fieldName, min, max }) => {
   if (value === undefined || value === null || value === '') return fallback;
@@ -159,6 +76,14 @@ const coerceRequestBody = (body) => {
   };
 };
 
+const contextSearchService = createSbmContextSearchService({
+  versesUrl: process.env.BHAGAVATAM_REMOTE_VERSES_URL,
+  openRouterApiKey: process.env.OPENROUTER_API_KEY,
+  openRouterModel: process.env.OPENROUTER_MODEL,
+  siteUrl: 'https://atlanta.godivinity.org',
+  appName: 'Bhagavatam Context Search'
+});
+
 const originalGet = express.application.get;
 const originalPost = express.application.post;
 const originalListen = express.application.listen;
@@ -169,35 +94,40 @@ const registerContextSearchRoutes = (app) => {
 
   originalGet.call(app, `${routePrefix}/health`, async (_req, res) => {
     try {
-      const result = await runHelper('health');
-      return res.status(result.status || 200).json(result.payload);
+      const result = await contextSearchService.health();
+      return res.status(200).json(result);
     } catch (error) {
       console.error('Context search health error:', error);
-      return res.status(500).json({ error: 'Failed to load context search health.' });
+      return res.status(503).json({
+        error: 'Failed to load context search health.',
+        detail: error instanceof Error ? error.message : String(error)
+      });
     }
   });
 
   originalPost.call(app, `${routePrefix}/query`, async (req, res) => {
     try {
       const payload = coerceRequestBody(req.body);
-      const result = await runHelper('query', payload);
-      return res.status(result.status || 200).json(result.payload);
+      const result = await contextSearchService.query({
+        ...payload,
+        request_origin: req.headers.origin || ''
+      });
+      return res.status(200).json(result);
     } catch (error) {
       if (error && Number.isInteger(error.status)) {
         return res.status(error.status).json({ error: error.message });
       }
       console.error('Context search query error:', error);
-      return res.status(500).json({ error: 'Failed to execute context search query.' });
+      return res.status(503).json({
+        error: 'Failed to execute context search query.',
+        detail: error instanceof Error ? error.message : String(error)
+      });
     }
   });
 };
 
 express.application.get = function patchedGet(...args) {
-  if (
-    !this[registrationFlag] &&
-    args.length >= 2 &&
-    (args[0] === '*' || args[0] === '/')
-  ) {
+  if (!this[registrationFlag] && args.length >= 2 && (args[0] === '*' || args[0] === '/')) {
     registerContextSearchRoutes(this);
   }
 
