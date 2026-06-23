@@ -39,19 +39,11 @@ const STOPWORDS = new Set([
 ]);
 
 const LOW_SIGNAL_TOKENS = new Set([
-  'avatar',
-  'avatara',
   'bhagavatam',
   'bhagavatham',
   'canto',
   'chapter',
-  'incarnation',
-  'incarnations',
-  'quote',
-  'quoted',
   'sanskrit',
-  'sloka',
-  'slokam',
   'summary',
   'text',
   'texts',
@@ -65,11 +57,8 @@ const EVENT_QUERY_HINTS = new Set([
   'appear',
   'appearance',
   'appeared',
-  'avatar',
-  'avatara',
   'birth',
   'born',
-  'episode',
   'happen',
   'happened',
   'happening',
@@ -160,7 +149,6 @@ const tokenize = (value, { expandSynonyms = false } = {}) => {
     .filter((token) => isMeaningfulToken(token) && !STOPWORDS.has(token));
 
   if (!expandSynonyms) return baseTokens;
-
   const expanded = new Set(baseTokens);
   for (const token of baseTokens) {
     for (const synonym of QUERY_SYNONYMS.get(token) || []) expanded.add(synonym);
@@ -174,12 +162,6 @@ const countTokens = (tokens) => {
   const counts = new Map();
   for (const token of tokens) counts.set(token, (counts.get(token) || 0) + 1);
   return counts;
-};
-
-const referenceSpan = (verses) => {
-  if (!verses.length) return '';
-  if (verses.length === 1) return verses[0].reference;
-  return `${verses[0].reference} - ${verses[verses.length - 1].reference}`;
 };
 
 const tokenCoverageScore = (tokens, tokenSet) => {
@@ -268,20 +250,11 @@ const buildQueryFeatures = (query) => {
     ...expanded.filter((token) => !LOW_SIGNAL_TOKENS.has(token))
   ]);
 
-  const relationalExpansions = new Set();
-  const hearingTerms = new Set(['hear', 'hearing', 'sravana', 'sravanam']);
-  const devoteeTerms = new Set(['devotee', 'devotees', 'bhakta', 'bhaktas']);
-  if (filtered.some((token) => hearingTerms.has(token)) && filtered.some((token) => devoteeTerms.has(token))) {
-    ['association', 'glory', 'glories', 'message', 'messages', 'pure', 'service'].forEach((token) =>
-      relationalExpansions.add(token)
-    );
-  }
-
   return {
     rawTokens,
-    queryTokens: uniqueList([...expanded, ...[...relationalExpansions].sort()]),
+    queryTokens: uniqueList(expanded),
     phraseTokens,
-    proximityTokens: uniqueList([...filtered, ...[...relationalExpansions].sort()]),
+    proximityTokens: filtered,
     entityTokens,
     titleTokens,
     isEventQuery: rawTokens.some((token) => EVENT_QUERY_HINTS.has(token)) && entityTokens.length > 0,
@@ -352,12 +325,6 @@ const buildFallbackAnswer = (query, hits) => {
   return `The strongest local match for "${query}" is ${lead.reference} in "${lead.chapter_title}". Other nearby candidates are ${references}. Review the retrieved passages to confirm the exact context.`;
 };
 
-const buildCandidateExcerpt = (text, limit = 900) => {
-  const compact = normalizeWhitespace(text);
-  if (compact.length <= limit) return compact;
-  return `${compact.slice(0, limit - 3).trimEnd()}...`;
-};
-
 const renderContextBlock = (verses) =>
   verses
     .map((verse) =>
@@ -371,29 +338,24 @@ const renderContextBlock = (verses) =>
     )
     .join('\n\n');
 
-class BhagavatamCorpus {
-  constructor({ versesUrl }) {
-    this.versesUrl = versesUrl || DEFAULT_REMOTE_VERSES_URL;
+class LightweightCorpus {
+  constructor() {
     this.verses = [];
     this.verseByUid = new Map();
-    this.chunks = [];
-    this.chunkByUid = new Map();
-    this.docLengths = new Map();
     this.docTerms = new Map();
+    this.docLengths = new Map();
     this.postings = new Map();
     this.documentCount = 0;
     this.averageDocLength = 0;
   }
 
-  static fromRows(rows, options) {
-    const corpus = new BhagavatamCorpus(options);
+  static fromRows(rows) {
+    const corpus = new LightweightCorpus();
     corpus.verses = rows
       .filter((row) => Array.isArray(row) && row.length >= 11)
       .map((row) => corpus.#verseFromRow(row))
       .sort((left, right) => left.canto - right.canto || left.chapter - right.chapter || left.verse - right.verse);
     corpus.verseByUid = new Map(corpus.verses.map((verse) => [verse.uid, verse]));
-    corpus.chunks = corpus.#buildChunks();
-    corpus.chunkByUid = new Map(corpus.chunks.map((chunk) => [chunk.uid, chunk]));
     corpus.#buildTermStats();
     return corpus;
   }
@@ -410,18 +372,12 @@ class BhagavatamCorpus {
     const translation = String(row[8] || '');
     const previousUid = row[9] ? String(row[9]) : null;
     const nextUid = row[10] ? String(row[10]) : null;
-    const groupSlug = String(verse);
-    const groupLabel = `Text ${verse}`;
     const sourceUrl = `https://vedabase.io/en/library/sb/${canto}/${chapter}/${verse}/`;
-    const searchText = [
-      reference,
-      groupLabel,
-      groupSlug,
-      chapterTitle,
-      translation,
-      transliteration,
-      sanskrit
-    ].join('\n');
+    const searchText = [reference, chapterTitle, translation, transliteration, sanskrit].join('\n');
+    const normalizedText = normalizeForSearch(searchText);
+    const tokens = tokenize(normalizedText);
+    const titleTokens = tokenize(chapterTitle);
+    const translationTokens = tokenize(translation);
 
     return {
       uid,
@@ -429,90 +385,36 @@ class BhagavatamCorpus {
       canto,
       chapter,
       verse,
-      group_slug: groupSlug,
-      group_label: groupLabel,
       chapter_title: chapterTitle,
       source_url: sourceUrl,
       sanskrit,
       transliteration,
       translation,
       search_text: searchText,
-      normalized_text: normalizeForSearch(searchText),
+      normalized_text: normalizedText,
+      tokens,
+      token_set: new Set(tokens),
+      title_tokens: titleTokens,
+      translation_token_set: new Set(translationTokens),
       previous_uid: previousUid,
       next_uid: nextUid
     };
   }
 
-  #buildChunks() {
-    const chunks = [];
-    const grouped = new Map();
-
-    for (const verse of this.verses) {
-      const groupedKey = `${verse.canto}:${verse.chapter}:${verse.group_slug}`;
-      if (!grouped.has(groupedKey)) grouped.set(groupedKey, []);
-      grouped.get(groupedKey).push(verse);
-      chunks.push(this.#buildChunk('verse', [verse], verse.uid));
-    }
-
-    for (let index = 0; index < this.verses.length; index += 1) {
-      const verse = this.verses[index];
-      const window = this.verses.slice(Math.max(0, index - 1), Math.min(this.verses.length, index + 2));
-      chunks.push(this.#buildChunk('window', window, verse.uid));
-    }
-
-    for (const groupedVerses of grouped.values()) {
-      if (groupedVerses.length <= 1) continue;
-      const anchorVerse = groupedVerses[Math.floor(groupedVerses.length / 2)];
-      chunks.push(this.#buildChunk('group', groupedVerses, anchorVerse.uid));
-    }
-
-    return chunks;
-  }
-
-  #buildChunk(chunkType, verses, anchorUid) {
-    let chapterTitle = verses[0]?.chapter_title || '';
-    if (chunkType === 'group' && verses.length) chapterTitle = `${chapterTitle} | ${verses[0].group_label}`;
-
-    const searchText = [
-      referenceSpan(verses),
-      chapterTitle,
-      ...verses.map((verse) => [verse.reference, verse.translation, verse.transliteration, verse.sanskrit].join('\n'))
-    ].join('\n\n');
-    const normalizedText = normalizeForSearch(searchText);
-    const tokens = tokenize(normalizedText);
-    const titleTokens = tokenize(chapterTitle);
-    const contentTokens = tokenize(verses.map((verse) => verse.translation).join('\n'));
-    const firstReference = verses[0]?.reference || anchorUid;
-    return {
-      uid: `${chunkType}:${anchorUid}:${verses.length}`,
-      chunk_type: chunkType,
-      anchor_uid: anchorUid,
-      verse_uids: verses.map((verse) => verse.uid),
-      reference_label: verses.length === 1 ? firstReference : referenceSpan(verses),
-      chapter_title: chapterTitle,
-      search_text: searchText,
-      normalized_text: normalizedText,
-      title_tokens: titleTokens,
-      token_set: new Set(tokens),
-      content_token_set: new Set(contentTokens)
-    };
-  }
-
   #buildTermStats() {
     let totalLength = 0;
-    for (const chunk of this.chunks) {
-      const tokens = tokenize(chunk.normalized_text);
-      const counter = countTokens(tokens);
-      this.docTerms.set(chunk.uid, counter);
+    for (const verse of this.verses) {
+      const counter = countTokens(verse.tokens);
+      this.docTerms.set(verse.uid, counter);
       const docLength = [...counter.values()].reduce((sum, value) => sum + value, 0);
-      this.docLengths.set(chunk.uid, docLength);
+      this.docLengths.set(verse.uid, docLength);
       totalLength += docLength;
       for (const token of counter.keys()) {
         if (!this.postings.has(token)) this.postings.set(token, new Set());
-        this.postings.get(token).add(chunk.uid);
+        this.postings.get(token).add(verse.uid);
       }
     }
-    this.documentCount = this.chunks.length;
+    this.documentCount = this.verses.length;
     this.averageDocLength = this.documentCount ? totalLength / this.documentCount : 0;
   }
 
@@ -522,10 +424,10 @@ class BhagavatamCorpus {
     return Math.log(1 + (this.documentCount - docFreq + 0.5) / (docFreq + 0.5));
   }
 
-  #bm25(queryTokens, chunkUid, k1 = 1.5, b = 0.75) {
+  #bm25(queryTokens, verseUid, k1 = 1.5, b = 0.75) {
     if (!queryTokens.length) return 0;
-    const termCounts = this.docTerms.get(chunkUid) || new Map();
-    const docLength = this.docLengths.get(chunkUid) || 1;
+    const termCounts = this.docTerms.get(verseUid) || new Map();
+    const docLength = this.docLengths.get(verseUid) || 1;
     let score = 0;
     for (const token of queryTokens) {
       const frequency = termCounts.get(token) || 0;
@@ -538,41 +440,30 @@ class BhagavatamCorpus {
     return score;
   }
 
-  #fuzzyScore(queryFeatures, chunk) {
+  #fuzzyScore(queryFeatures, verse) {
     if (!queryFeatures.queryTokens.length) return 0;
-    const chunkTokenList = tokenize(chunk.normalized_text);
-    const overlap = queryFeatures.queryTokens.filter((token) => chunk.token_set.has(token)).length;
-    const overlapRatio = overlap / Math.max(queryFeatures.queryTokens.length, 1);
 
-    const titleTokenSet = new Set(chunk.title_tokens);
-    const titleOverlapCount = queryFeatures.titleTokens.filter((token) => titleTokenSet.has(token)).length;
+    const overlap = queryFeatures.queryTokens.filter((token) => verse.token_set.has(token)).length;
+    const overlapRatio = overlap / Math.max(queryFeatures.queryTokens.length, 1);
+    const titleOverlapCount = queryFeatures.titleTokens.filter((token) => verse.title_tokens.includes(token)).length;
     const titleOverlapRatio = queryFeatures.titleTokens.length
       ? titleOverlapCount / Math.max(queryFeatures.titleTokens.length, 1)
       : 0;
 
-    let chunkTypeBonus = 0;
-    if (queryFeatures.isEventQuery) {
-      chunkTypeBonus = chunk.chunk_type === 'group' ? 1.1 : chunk.chunk_type === 'window' ? 0.65 : 0.2;
-    } else if (queryFeatures.isVerseQuery) {
-      chunkTypeBonus = chunk.chunk_type === 'verse' ? 1.0 : 0.45;
-    } else {
-      chunkTypeBonus = chunk.chunk_type === 'window' ? 0.75 : chunk.chunk_type === 'group' ? 0.5 : 0.25;
-    }
+    const phraseBonus = phraseMatchScore(queryFeatures.phraseTokens, verse.normalized_text, verse.tokens);
+    const proximityBonus = proximityScore(queryFeatures.proximityTokens, verse.tokens);
+    const entityBonus = tokenCoverageScore(queryFeatures.entityTokens, verse.translation_token_set) * 3.5;
+    const eventBonus = queryFeatures.isEventQuery ? 0.6 : 0.2;
 
-    const titleCoverageBonus = titleOverlapRatio * 3.0;
-    const phraseBonus = phraseMatchScore(queryFeatures.phraseTokens, chunk.normalized_text, chunkTokenList);
-    const proximityBonus = proximityScore(queryFeatures.proximityTokens, chunkTokenList);
-    const entityBonus = tokenCoverageScore(queryFeatures.entityTokens, chunk.content_token_set) * 4.0;
-
-    return overlapRatio + chunkTypeBonus + titleCoverageBonus + phraseBonus + proximityBonus + entityBonus;
+    return overlapRatio + titleOverlapRatio * 2.5 + phraseBonus + proximityBonus + entityBonus + eventBonus;
   }
 
-  #candidateChunkUids(queryTokens) {
+  #candidateVerseUids(queryTokens) {
     const candidateUids = new Set();
     for (const token of queryTokens) {
-      for (const chunkUid of this.postings.get(token) || []) candidateUids.add(chunkUid);
+      for (const verseUid of this.postings.get(token) || []) candidateUids.add(verseUid);
     }
-    return candidateUids.size ? candidateUids : new Set(this.chunks.map((chunk) => chunk.uid));
+    return candidateUids.size ? candidateUids : new Set(this.verses.map((verse) => verse.uid));
   }
 
   #scoreVariant(query, topK) {
@@ -580,24 +471,23 @@ class BhagavatamCorpus {
     if (!queryFeatures.queryTokens.length) return [];
 
     const hits = [];
-    for (const chunkUid of this.#candidateChunkUids(queryFeatures.queryTokens)) {
-      const chunk = this.chunkByUid.get(chunkUid);
-      const lexicalScore = this.#bm25(queryFeatures.queryTokens, chunkUid);
-      const fuzzyScore = this.#fuzzyScore(queryFeatures, chunk);
-      const combinedScore = lexicalScore + fuzzyScore * 1.4;
+    for (const verseUid of this.#candidateVerseUids(queryFeatures.queryTokens)) {
+      const verse = this.verseByUid.get(verseUid);
+      const lexicalScore = this.#bm25(queryFeatures.queryTokens, verseUid);
+      const fuzzyScore = this.#fuzzyScore(queryFeatures, verse);
+      const combinedScore = lexicalScore + fuzzyScore * 1.5;
       if (combinedScore <= 0) continue;
 
-      const anchorVerse = this.verseByUid.get(chunk.anchor_uid);
       hits.push({
-        verse: anchorVerse,
+        verse,
         score: combinedScore,
         lexical_score: lexicalScore,
         fuzzy_score: fuzzyScore,
         semantic_score: 0,
         rerank_score: 0,
-        matched_chunk_id: chunk.uid,
-        matched_chunk_type: chunk.chunk_type,
-        matched_verse_uids: chunk.verse_uids
+        matched_chunk_id: verse.uid,
+        matched_chunk_type: 'verse',
+        matched_verse_uids: [verse.uid]
       });
     }
 
@@ -706,7 +596,7 @@ class SbmContextSearchService {
     const payload = await response.json();
     const rows = Array.isArray(payload?.verses) ? payload.verses : [];
     if (!rows.length) throw new Error('Verses corpus is empty.');
-    return BhagavatamCorpus.fromRows(rows, { versesUrl: this.versesUrl });
+    return LightweightCorpus.fromRows(rows);
   }
 
   async health() {
@@ -744,7 +634,22 @@ class SbmContextSearchService {
       answer: answerResult.answerText,
       hit_count: hits.length,
       hits: hits.map((hit) => this.#serializeHit(hit)),
-      context_groups: contextGroups.map((group) => group.map((verse) => ({ ...verse })))
+      context_groups: contextGroups.map((group) =>
+        group.map((verse) => ({
+          uid: verse.uid,
+          reference: verse.reference,
+          canto: verse.canto,
+          chapter: verse.chapter,
+          verse: verse.verse,
+          chapter_title: verse.chapter_title,
+          source_url: verse.source_url,
+          sanskrit: verse.sanskrit,
+          transliteration: verse.transliteration,
+          translation: verse.translation,
+          previous_uid: verse.previous_uid,
+          next_uid: verse.next_uid
+        }))
+      )
     };
   }
 
@@ -817,8 +722,7 @@ class SbmContextSearchService {
       fuzzy_score: Number(hit.fuzzy_score.toFixed(4)),
       semantic_score: 0,
       rerank_score: 0,
-      matched_chunk_type: hit.matched_chunk_type,
-      excerpt: buildCandidateExcerpt(hit.verse.translation)
+      matched_chunk_type: hit.matched_chunk_type
     };
   }
 }
