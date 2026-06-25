@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from dataclasses import asdict
 from pathlib import Path
 
@@ -10,6 +11,63 @@ from .config import Settings
 from .llm import BhagavatamAnswerer, QueryPlan
 from .models import RetrievalHit, VerseRecord
 from .retriever import BhagavatamRetriever
+
+
+# ---------------------------------------------------------------------------
+# Direct explicit-reference resolution helpers
+# ---------------------------------------------------------------------------
+
+_SB_VERSE_RE = re.compile(
+    r"(?:SB|Srimad\s+Bhagavatam?|Bhagavatam)\s*(\d+)\.(\d+)\.(\d+)",
+    re.IGNORECASE,
+)
+_CANTO_CHAPTER_VERSE_RE = re.compile(
+    r"Canto\s*(\d+)\s*Chapter\s*(\d+)\s*(?:Verse|Text)\s*(\d+)",
+    re.IGNORECASE,
+)
+_SB_CHAPTER_RE = re.compile(
+    r"(?:SB|Srimad\s+Bhagavatam?|Bhagavatam)\s*(\d+)\.(\d+)(?!\.)",
+    re.IGNORECASE,
+)
+_CANTO_CHAPTER_RE = re.compile(
+    r"Canto\s*(\d+)\s*Chapter\s*(\d+)(?!\s*(?:Verse|Text)\s*\d)",
+    re.IGNORECASE,
+)
+_SANSKRIT_RE = re.compile(r"\b(sanskrit|devanagari|sloka|shloka)\b", re.IGNORECASE)
+_TRANSLITERATION_RE = re.compile(r"\b(transliteration|transliterate)\b", re.IGNORECASE)
+_TRANSLATION_RE = re.compile(r"\b(translation|english)\b", re.IGNORECASE)
+
+
+def _parse_verse_ref(query: str) -> tuple[int, int, int] | None:
+    m = _CANTO_CHAPTER_VERSE_RE.search(query)
+    if m:
+        return int(m.group(1)), int(m.group(2)), int(m.group(3))
+    m = _SB_VERSE_RE.search(query)
+    if m:
+        return int(m.group(1)), int(m.group(2)), int(m.group(3))
+    return None
+
+
+def _parse_chapter_ref(query: str) -> tuple[int, int] | None:
+    if _parse_verse_ref(query) is not None:
+        return None
+    m = _CANTO_CHAPTER_RE.search(query)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m = _SB_CHAPTER_RE.search(query)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    return None
+
+
+def _detect_output_mode(query: str) -> str | None:
+    if _SANSKRIT_RE.search(query):
+        return "sanskrit"
+    if _TRANSLITERATION_RE.search(query):
+        return "transliteration"
+    if _TRANSLATION_RE.search(query):
+        return "translation"
+    return None
 
 
 class EmbeddingCache:
@@ -93,6 +151,80 @@ class BhagavatamQueryService:
         )
         self.embedding_cache = EmbeddingCache(settings.cache_dir / "embeddings.json")
 
+    def _try_direct_lookup(self, query_text: str) -> dict | None:
+        verse_ref = _parse_verse_ref(query_text)
+        if verse_ref:
+            canto, chapter, verse = verse_ref
+            verse_uid = f"sb-{canto}-{chapter}-{verse}"
+            verse_record = self.retriever.verse_by_uid.get(verse_uid)
+            if verse_record:
+                output_mode = _detect_output_mode(query_text)
+                if output_mode == "sanskrit":
+                    answer = verse_record.sanskrit
+                elif output_mode == "transliteration":
+                    answer = verse_record.transliteration
+                elif output_mode == "translation":
+                    answer = verse_record.translation
+                else:
+                    answer = (
+                        f"{verse_record.reference} is in \"{verse_record.chapter_title}\".\n\n"
+                        f"Translation: {verse_record.translation}"
+                    )
+                hit = RetrievalHit(
+                    verse=verse_record,
+                    score=1.0,
+                    lexical_score=1.0,
+                    fuzzy_score=1.0,
+                    preview=verse_record.translation,
+                    matched_chunk_id=f"verse:{verse_uid}:1",
+                    matched_chunk_type="verse",
+                    matched_verse_uids=(verse_uid,),
+                )
+                return {
+                    "query": query_text,
+                    "rewritten_query": query_text,
+                    "query_variants": [query_text],
+                    "answer_mode": "direct_lookup",
+                    "answer": answer,
+                    "hit_count": 1,
+                    "hits": [self._serialize_hit(hit)],
+                    "context_groups": [self._serialize_context_group([verse_record])],
+                }
+
+        chapter_ref = _parse_chapter_ref(query_text)
+        if chapter_ref:
+            canto, chapter = chapter_ref
+            chapter_verses = [
+                v for v in self.retriever.verses
+                if v.canto == canto and v.chapter == chapter
+            ]
+            if chapter_verses:
+                first_verse = chapter_verses[0]
+                ref = f"SB {canto}.{chapter}"
+                answer = f"{ref} is \"{first_verse.chapter_title}\"."
+                hit = RetrievalHit(
+                    verse=first_verse,
+                    score=1.0,
+                    lexical_score=1.0,
+                    fuzzy_score=1.0,
+                    preview=first_verse.translation,
+                    matched_chunk_id=f"verse:{first_verse.uid}:1",
+                    matched_chunk_type="verse",
+                    matched_verse_uids=(first_verse.uid,),
+                )
+                return {
+                    "query": query_text,
+                    "rewritten_query": query_text,
+                    "query_variants": [query_text],
+                    "answer_mode": "direct_lookup",
+                    "answer": answer,
+                    "hit_count": len(chapter_verses),
+                    "hits": [self._serialize_hit(hit)],
+                    "context_groups": [self._serialize_context_group([first_verse])],
+                }
+
+        return None
+
     def query(
         self,
         query_text: str,
@@ -101,6 +233,10 @@ class BhagavatamQueryService:
         use_llm: bool = True,
         history: list[str] | None = None,
     ) -> dict:
+        direct = self._try_direct_lookup(query_text)
+        if direct is not None:
+            return direct
+
         recent_history = [item.strip() for item in (history or []) if item and item.strip()][-6:]
         query_plan = self.answerer.plan_query(query_text, recent_history)
 
