@@ -91,3 +91,67 @@ test('prefers the Bhagavatam-specific model override', () => {
     }
   }
 });
+
+test('retrieves SB 10.21.3 for Venu Gita instead of Venus verses', async () => {
+  const rows = [
+    [
+      'sb-10-21-3',
+      'SB 10.21.3',
+      10,
+      21,
+      3,
+      "The Gopis Glorify the Song of Krishna's Flute",
+      'sanskrit',
+      'tad vraja-striya asrutya venu-gitam smarodayam',
+      "When the young ladies in the cowherd village of Vraja heard the song of Krishna's flute, they spoke about Him.",
+      null,
+      null
+    ],
+    [
+      'sb-5-22-12',
+      'SB 5.22.12',
+      5,
+      22,
+      12,
+      'The Orbits of the Planets',
+      'sanskrit',
+      'tata uparistad usana dvi-laksa-yojanata upalabhyate',
+      'Some 1,600,000 miles above this group of stars is the planet Venus.',
+      null,
+      null
+    ]
+  ];
+
+  const server = http.createServer((req, res) => {
+    if (req.url === '/verses.json') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ verses: rows }));
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'not found' }));
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+  try {
+    const service = createSbmContextSearchService({
+      versesUrl: `http://127.0.0.1:${server.address().port}/verses.json`
+    });
+
+    const result = await service.query({
+      query: 'Where is the Venu Gita?',
+      top_k: 2,
+      neighbor_window: 0,
+      use_llm: false,
+      request_origin: 'https://atlanta.godivinity.org'
+    });
+
+    assert.equal(result.hits[0].reference, 'SB 10.21.3');
+    assert.ok(result.hit_count >= 1);
+    assert.match(result.answer, /SB 10\.21\.3/);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});

@@ -88,6 +88,9 @@ const QUERY_SYNONYMS = new Map([
 
 const TOKEN_EQUIVALENTS = new Map([
   ['bhagavatham', 'bhagavatam'],
+  ['geeta', 'gita'],
+  ['geetam', 'gita'],
+  ['gitam', 'gita'],
   ['krsna', 'krishna'],
   ['narasimha', 'nrsimha'],
   ['narsimha', 'nrsimha'],
@@ -131,7 +134,7 @@ const normalizeForSearch = (value) =>
       .normalize('NFKD')
       .replace(/\p{Diacritic}/gu, '')
       .replace(/['’]/g, '')
-      .replace(/[^a-zA-Z0-9\s-]/g, ' ')
+      .replace(/[^a-zA-Z0-9\s]/g, ' ')
       .toLowerCase()
   );
 
@@ -141,7 +144,9 @@ const normalizeToken = (value) => {
   if (token.length > 5 && token.endsWith('ing')) token = token.slice(0, -3);
   else if (token.length > 4 && token.endsWith('ies')) token = `${token.slice(0, -3)}y`;
   else if (token.length > 4 && token.endsWith('es')) token = token.slice(0, -2);
-  else if (token.length > 3 && token.endsWith('s') && !token.endsWith('ss')) token = token.slice(0, -1);
+  else if (token.length > 3 && token.endsWith('s') && !token.endsWith('ss') && !token.endsWith('us')) {
+    token = token.slice(0, -1);
+  }
   return TOKEN_EQUIVALENTS.get(token) || token;
 };
 
