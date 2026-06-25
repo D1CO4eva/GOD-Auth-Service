@@ -165,7 +165,85 @@ test('retrieves SB 10.21.3 for Venu Gita instead of Venus verses', async () => {
     assert.equal(result.hits[0].chapter_title, "The Gopis Glorify the Song of Krishna's Flute");
     assert.ok(result.hit_count >= 1);
     assert.match(result.answer, /SB 10\.21/);
-    assert.match(result.answer, /Gopis Glorify the Song of Krishna's Flute/i);
+    assert.match(result.answer, /Venu Gita/i);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test('retrieves Yugala Gita from SB 10.35 instead of matching unrelated gita chapters', async () => {
+  const rows = [
+    [
+      'sb-10-35-1',
+      'SB 10.35.1',
+      10,
+      35,
+      1,
+      "The Gopis Sing of Krishna as He Wanders in the Forest",
+      'sanskrit',
+      'sri suka uvaca gopyah krsne vanam yate',
+      'When Krishna went to the forest, the gopis sang about His pastimes throughout the day.',
+      null,
+      null
+    ],
+    [
+      'sb-10-35-18',
+      'SB 10.35.18',
+      10,
+      35,
+      18,
+      "The Gopis Sing of Krishna as He Wanders in the Forest",
+      'sanskrit',
+      'krsna plays his flute while counting the cows',
+      'As Krishna plays His flute, the deer and the gopis become enchanted.',
+      null,
+      null
+    ],
+    [
+      'sb-11-26-19',
+      'SB 11.26.19',
+      11,
+      26,
+      19,
+      'The Aila-gita',
+      'sanskrit',
+      'pitroh kim svam nu bharyayah',
+      'One can never decide whose property the body actually is.',
+      null,
+      null
+    ]
+  ];
+
+  const server = http.createServer((req, res) => {
+    if (req.url === '/verses.json') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ verses: rows }));
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'not found' }));
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+  try {
+    const service = createSbmContextSearchService({
+      versesUrl: `http://127.0.0.1:${server.address().port}/verses.json`
+    });
+
+    const result = await service.query({
+      query: 'Which chapter does Yugala Gitam happen?',
+      top_k: 3,
+      neighbor_window: 0,
+      use_llm: true,
+      request_origin: 'https://atlanta.godivinity.org'
+    });
+
+    assert.equal(result.answer_mode, 'reference_lookup');
+    assert.equal(result.hits[0].reference, 'SB 10.35.1');
+    assert.match(result.answer, /SB 10\.35/);
+    assert.match(result.answer, /Yugala Gita/i);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }

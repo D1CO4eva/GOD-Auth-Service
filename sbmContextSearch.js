@@ -118,6 +118,21 @@ const FOLLOW_UP_HINTS = new Set([
   'which'
 ]);
 
+const NAMED_PASSAGE_ALIASES = [
+  {
+    aliases: ['venu gita', 'venu gitam', 'song of krishna flute', 'song of krsna flute'],
+    chapter_reference: 'SB 10.21',
+    lead_reference: 'SB 10.21.3',
+    chapter_title: "The Gopīs Glorify the Song of Kṛṣṇa’s Flute"
+  },
+  {
+    aliases: ['yugala gita', 'yugala gitam'],
+    chapter_reference: 'SB 10.35',
+    lead_reference: 'SB 10.35.1',
+    chapter_title: 'The Gopīs Sing of Kṛṣṇa as He Wanders in the Forest'
+  }
+];
+
 const normalizeWhitespace = (value) =>
   String(value ?? '')
     .replace(/\s+/g, ' ')
@@ -168,6 +183,17 @@ const tokenize = (value, { expandSynonyms = false } = {}) => {
 };
 
 const uniqueList = (values) => [...new Set(values.filter(Boolean))];
+
+const findNamedPassageAlias = (query) => {
+  const normalized = normalizeForSearch(query);
+  if (!normalized) return null;
+
+  return (
+    NAMED_PASSAGE_ALIASES.find((entry) =>
+      entry.aliases.some((alias) => normalized.includes(normalizeForSearch(alias)))
+    ) || null
+  );
+};
 
 const countTokens = (tokens) => {
   const counts = new Map();
@@ -353,7 +379,14 @@ const isReferenceLookupQuery = (query) => {
   return tokens.includes('where') && tokens.some((token) => subjectHints.has(token));
 };
 
-const buildReferenceAnswer = (query, hits) => {
+const buildReferenceAnswer = (query, hits, namedPassage = null) => {
+  if (namedPassage) {
+    return `${namedPassage.aliases[0]
+      .split(' ')
+      .map((token) => `${token.charAt(0).toUpperCase()}${token.slice(1)}`)
+      .join(' ')} is in ${namedPassage.chapter_reference}, especially ${namedPassage.lead_reference}, in "${namedPassage.chapter_title}".`;
+  }
+
   if (!hits.length) return null;
 
   const chapterCounts = new Map();
@@ -678,14 +711,23 @@ class SbmContextSearchService {
     const corpus = await this.ensureCorpus();
     const recentHistory = history.map((item) => normalizeWhitespace(item)).filter(Boolean).slice(-6);
     const queryPlan = buildFallbackQueryPlan(query, recentHistory);
+    const namedPassage = findNamedPassageAlias(queryPlan.standalone_query) || findNamedPassageAlias(query);
+    const lexicalQueries = namedPassage
+      ? uniqueList([
+          ...queryPlan.lexical_queries,
+          namedPassage.chapter_reference,
+          namedPassage.lead_reference,
+          namedPassage.chapter_title
+        ])
+      : queryPlan.lexical_queries;
     const hits = corpus.retrieve(queryPlan.standalone_query, {
       topK: top_k,
-      lexicalQueries: queryPlan.lexical_queries
+      lexicalQueries
     });
     const contextGroups = hits.map((hit) => corpus.expandContextGroup(hit.matched_verse_uids, neighbor_window));
     const referenceAnswer =
       isReferenceLookupQuery(queryPlan.standalone_query) || isReferenceLookupQuery(query)
-        ? buildReferenceAnswer(query, hits)
+        ? buildReferenceAnswer(query, hits, namedPassage)
         : null;
     const answerResult = await this.#answer({
       query,
@@ -700,7 +742,7 @@ class SbmContextSearchService {
     return {
       query,
       rewritten_query: queryPlan.standalone_query,
-      query_variants: queryPlan.lexical_queries,
+      query_variants: lexicalQueries,
       answer_mode: answerResult.answerMode,
       answer: answerResult.answerText,
       hit_count: hits.length,
