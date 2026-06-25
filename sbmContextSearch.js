@@ -739,15 +739,43 @@ class SbmContextSearchService {
       requestOrigin: request_origin
     });
 
+    // When reference_lookup resolved a specific verse, narrow hits and context_groups
+    // to only that verse so the displayed context matches the answer citation.
+    let responseHits = hits;
+    let responseContextGroups = contextGroups;
+    if (answerResult.answerMode === 'reference_lookup') {
+      let resolvedVerse = null;
+      if (namedPassage) {
+        const m = namedPassage.lead_reference.match(/SB\s+(\d+)\.(\d+)\.(\d+)/i);
+        if (m) resolvedVerse = corpus.verseByUid.get(`sb-${m[1]}-${m[2]}-${m[3]}`);
+      }
+      if (!resolvedVerse && hits.length) resolvedVerse = hits[0].verse;
+      if (resolvedVerse) {
+        const resolvedHit = hits.find((h) => h.verse.uid === resolvedVerse.uid) || {
+          verse: resolvedVerse,
+          score: 1.0,
+          lexical_score: 1.0,
+          fuzzy_score: 1.0,
+          semantic_score: 0,
+          rerank_score: 0,
+          matched_chunk_id: resolvedVerse.uid,
+          matched_chunk_type: 'verse',
+          matched_verse_uids: [resolvedVerse.uid]
+        };
+        responseHits = [resolvedHit];
+        responseContextGroups = [corpus.expandContextGroup([resolvedVerse.uid], neighbor_window)];
+      }
+    }
+
     return {
       query,
       rewritten_query: queryPlan.standalone_query,
       query_variants: lexicalQueries,
       answer_mode: answerResult.answerMode,
       answer: answerResult.answerText,
-      hit_count: hits.length,
-      hits: hits.map((hit) => this.#serializeHit(hit)),
-      context_groups: contextGroups.map((group) =>
+      hit_count: responseHits.length,
+      hits: responseHits.map((hit) => this.#serializeHit(hit)),
+      context_groups: responseContextGroups.map((group) =>
         group.map((verse) => ({
           uid: verse.uid,
           reference: verse.reference,
