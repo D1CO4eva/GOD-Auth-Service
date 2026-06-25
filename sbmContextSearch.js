@@ -336,6 +336,53 @@ const buildFallbackAnswer = (query, hits) => {
   return `The strongest local match for "${query}" is ${lead.reference} in "${lead.chapter_title}". Other nearby candidates are ${references}. Review the retrieved passages to confirm the exact context.`;
 };
 
+const isReferenceLookupQuery = (query) => {
+  const normalized = normalizeForSearch(query);
+  if (!normalized) return false;
+
+  if (
+    /\b(which|what)\s+(verse|verses|chapter|canto|sloka|shloka|text)\b/.test(normalized) ||
+    /\bwhere\s+(can\s+i\s+find|do\s+i\s+find)\b/.test(normalized) ||
+    /\b(find|locate|located)\b/.test(normalized)
+  ) {
+    return true;
+  }
+
+  const tokens = normalized.split(' ').filter(Boolean).map(normalizeToken);
+  const subjectHints = new Set(['gita', 'song', 'prayer', 'stuti', 'stava', 'stotram', 'stotra']);
+  return tokens.includes('where') && tokens.some((token) => subjectHints.has(token));
+};
+
+const buildReferenceAnswer = (query, hits) => {
+  if (!hits.length) return null;
+
+  const chapterCounts = new Map();
+  for (const hit of hits.slice(0, 5)) {
+    const key = `${hit.verse.canto}.${hit.verse.chapter}`;
+    chapterCounts.set(key, (chapterCounts.get(key) || 0) + 1);
+  }
+
+  const lead = hits[0].verse;
+  const leadChapterKey = `${lead.canto}.${lead.chapter}`;
+  const leadChapterCount = chapterCounts.get(leadChapterKey) || 0;
+  if (leadChapterCount < 2) return null;
+
+  const chapterReference = `SB ${lead.canto}.${lead.chapter}`;
+  const subject = normalizeWhitespace(
+    String(query ?? '')
+      .replace(/^[Ww]here\s+(?:is|are)\s+/u, '')
+      .replace(/^[Ww]here\s+can\s+i\s+find\s+/u, '')
+      .replace(/^(which|what)\s+(?:verse|verses|chapter|canto|sloka|shloka|text)\s+(?:is|are|contains|describe|describes)\s+/iu, '')
+      .replace(/[?]+$/g, '')
+  );
+  const formattedSubject = subject ? `${subject.charAt(0).toUpperCase()}${subject.slice(1)}` : 'This passage';
+  if (leadChapterCount >= 3) {
+    return `${formattedSubject} is in ${chapterReference}, especially ${lead.reference}, in "${lead.chapter_title}".`;
+  }
+
+  return `The strongest Bhagavatam reference is ${lead.reference} in "${lead.chapter_title}" (${chapterReference}).`;
+};
+
 const renderContextBlock = (verses) =>
   verses
     .map((verse) =>
@@ -636,11 +683,16 @@ class SbmContextSearchService {
       lexicalQueries: queryPlan.lexical_queries
     });
     const contextGroups = hits.map((hit) => corpus.expandContextGroup(hit.matched_verse_uids, neighbor_window));
+    const referenceAnswer =
+      isReferenceLookupQuery(queryPlan.standalone_query) || isReferenceLookupQuery(query)
+        ? buildReferenceAnswer(query, hits)
+        : null;
     const answerResult = await this.#answer({
       query,
       rewrittenQuery: queryPlan.standalone_query,
       contextGroups,
       hits,
+      referenceAnswer,
       useLlm: use_llm,
       requestOrigin: request_origin
     });
@@ -672,7 +724,14 @@ class SbmContextSearchService {
     };
   }
 
-  async #answer({ query, rewrittenQuery, contextGroups, hits, useLlm, requestOrigin }) {
+  async #answer({ query, rewrittenQuery, contextGroups, hits, referenceAnswer, useLlm, requestOrigin }) {
+    if (referenceAnswer) {
+      return {
+        answerMode: 'reference_lookup',
+        answerText: referenceAnswer
+      };
+    }
+
     if (!useLlm || !this.openRouterApiKey) {
       return {
         answerMode: 'retrieval_only',
@@ -697,7 +756,7 @@ class SbmContextSearchService {
             {
               role: 'system',
               content:
-                'You answer questions about the Srimad Bhagavatam using only the supplied passages. Be concise, cite references like SB 10.15.10, and clearly say when the retrieved context is inconclusive. Prefer the exact occurrence passage over a chapter summary.'
+                'You answer questions about the Srimad Bhagavatam using only the supplied passages. Be concise, lead with the single best reference like SB 10.15.10, add one short supporting sentence only when needed, and clearly say when the retrieved context is inconclusive. Prefer the exact occurrence passage over a chapter summary.'
             },
             {
               role: 'user',

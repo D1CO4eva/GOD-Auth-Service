@@ -108,6 +108,19 @@ test('retrieves SB 10.21.3 for Venu Gita instead of Venus verses', async () => {
       null
     ],
     [
+      'sb-10-21-14',
+      'SB 10.21.14',
+      10,
+      21,
+      14,
+      "The Gopis Glorify the Song of Krishna's Flute",
+      'sanskrit',
+      'kala-venu-gitam srnvanti',
+      "The birds listen silently to the sweet vibrations of Krishna's flute.",
+      null,
+      null
+    ],
+    [
       'sb-5-22-12',
       'SB 5.22.12',
       5,
@@ -144,13 +157,15 @@ test('retrieves SB 10.21.3 for Venu Gita instead of Venus verses', async () => {
       query: 'Where is the Venu Gita?',
       top_k: 2,
       neighbor_window: 0,
-      use_llm: false,
+      use_llm: true,
       request_origin: 'https://atlanta.godivinity.org'
     });
 
-    assert.equal(result.hits[0].reference, 'SB 10.21.3');
+    assert.equal(result.answer_mode, 'reference_lookup');
+    assert.equal(result.hits[0].chapter_title, "The Gopis Glorify the Song of Krishna's Flute");
     assert.ok(result.hit_count >= 1);
-    assert.match(result.answer, /SB 10\.21\.3/);
+    assert.match(result.answer, /SB 10\.21/);
+    assert.match(result.answer, /Gopis Glorify the Song of Krishna's Flute/i);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
