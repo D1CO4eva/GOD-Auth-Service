@@ -1,6 +1,7 @@
 const DEFAULT_REMOTE_VERSES_URL =
   'https://atlanta.godivinity.org/srimad-bhagavatham-search/data/verses.json';
 const DEFAULT_OPENROUTER_MODEL = 'openai/gpt-4o-mini';
+const DEFAULT_ANSWER_TIMEOUT_MS = 15000;
 
 const STOPWORDS = new Set([
   'a',
@@ -118,6 +119,11 @@ const normalizeWhitespace = (value) =>
   String(value ?? '')
     .replace(/\s+/g, ' ')
     .trim();
+
+const coercePositiveInteger = (value, fallback) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
 
 const normalizeForSearch = (value) =>
   normalizeWhitespace(
@@ -565,10 +571,18 @@ class SbmContextSearchService {
   constructor(options = {}) {
     this.versesUrl = options.versesUrl || process.env.BHAGAVATAM_REMOTE_VERSES_URL || DEFAULT_REMOTE_VERSES_URL;
     this.openRouterApiKey = options.openRouterApiKey || process.env.OPENROUTER_API_KEY || '';
-    this.openRouterModel = options.openRouterModel || process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL;
+    this.openRouterModel =
+      options.openRouterModel ||
+      process.env.BHAGAVATAM_OPENROUTER_MODEL ||
+      process.env.OPENROUTER_MODEL ||
+      DEFAULT_OPENROUTER_MODEL;
     this.openRouterApiUrl = options.openRouterApiUrl || 'https://openrouter.ai/api/v1/chat/completions';
     this.siteUrl = options.siteUrl || 'https://atlanta.godivinity.org';
     this.appName = options.appName || 'Bhagavatam Context Search';
+    this.answerTimeoutMs = coercePositiveInteger(
+      options.answerTimeoutMs ?? process.env.BHAGAVATAM_OPENROUTER_TIMEOUT_MS,
+      DEFAULT_ANSWER_TIMEOUT_MS
+    );
     this.corpus = null;
     this.loadPromise = null;
   }
@@ -686,7 +700,7 @@ class SbmContextSearchService {
             }
           ]
         }),
-        signal: AbortSignal.timeout(120000)
+        signal: AbortSignal.timeout(this.answerTimeoutMs)
       });
 
       if (!response.ok) {
