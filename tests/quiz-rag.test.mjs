@@ -872,7 +872,7 @@ test('repairs a draft when it drops required week coverage', async (context) => 
   });
   const payload = await response.json();
   assert.equal(response.status, 200, JSON.stringify(payload));
-  assert.equal(modelCalls, 3, 'two non-compliant iterative slots should need exactly one whole-quiz repair');
+  assert.equal(modelCalls, 5, 'two non-compliant iterative slots should retry once more before falling back to a whole-quiz repair');
   assert.equal(payload.quiz.questions[0].sources[0].source_group_label, 'Week 1');
   assert.equal(payload.quiz.questions[1].sources[0].source_group_label, 'Week 2');
 });
@@ -955,9 +955,9 @@ test('repairs a generated draft that repeats question history', async (context) 
   });
   const payload = await response.json();
   assert.equal(response.status, 200, JSON.stringify(payload));
-  assert.equal(modelCalls, 6, 'five duplicate iterative candidates should need exactly one whole-quiz repair');
+  assert.equal(modelCalls, 11, 'five duplicate iterative candidates should retry once more before falling back to a whole-quiz repair');
   assert.match(firstGenerationPrompt, /CANDIDATE: this is question 1 of 5/);
-  assert.equal(firstMaxTokens, 700, 'iterative single-question calls use the per-question token budget');
+  assert.equal(firstMaxTokens, 1200, 'iterative single-question calls use the per-question token budget');
   assert.equal(payload.quiz.questions[0].question, 'Which quality do the selected notes associate with Dharma?');
   assert.equal(payload.verification.avoided_question_count, 1);
 });

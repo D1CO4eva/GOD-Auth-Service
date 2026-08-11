@@ -11,7 +11,7 @@ const DEFAULT_GROUNDING_CONFIDENCE_THRESHOLD = 0.9;
 const MAX_QUESTION_COUNT = 35;
 const MAX_AVOID_QUESTIONS = 60;
 const QUESTION_GENERATION_CONCURRENCY = 6;
-const SINGLE_QUESTION_MAX_TOKENS = 700;
+const SINGLE_QUESTION_MAX_TOKENS = 1200;
 const HISTORY_DUPLICATE_THRESHOLD = 0.62;
 const WITHIN_QUIZ_DUPLICATE_THRESHOLD = 0.85;
 const DOMAIN_BOILERPLATE_TOKENS = new Set(['srimad', 'bhagavatam', 'bhagavatham']);
@@ -1540,6 +1540,7 @@ export const createQuizRouter = ({
       };
 
       let generationResult;
+      let draftFailure;
       try {
         generationResult = await generateQuestionsIteratively({
           apiKey,
@@ -1552,22 +1553,44 @@ export const createQuizRouter = ({
           onProgress
         });
       } catch (error) {
-        const draftFailure = error instanceof AggregateError
+        draftFailure = error instanceof AggregateError
           ? error.errors.map((reason) => reason instanceof Error ? reason.message : String(reason)).join(' | ')
           : error instanceof Error ? error.message : String(error);
         repaired = true;
-        onProgress({ phase: 'repairing', completed: 0, total: 1 });
-        generationResult = await runValidatedGeneration({
-          messages: buildVerificationMessages(
+        // A handful of per-question calls failing (truncated JSON, a stalled model, etc.)
+        // is expected at scale, not a sign the request itself is invalid — retry the same
+        // robust per-question approach once before falling back to a single large
+        // whole-quiz call, which is far more likely to itself hit a truncation issue on
+        // bigger quizzes.
+        onProgress({ phase: 'repairing', completed: 0, total: generationQuestionCount(request) });
+        try {
+          generationResult = await generateQuestionsIteratively({
+            apiKey,
             request,
             chunks,
-            { title: 'Replacement quiz', questions: [] },
-            `The generated draft failed validation: ${draftFailure}`,
-            generationQuestionCount(request)
-          ),
-          temperature: VERIFICATION_TEMPERATURE,
-          phase: 'repair'
-        });
+            origin: req.headers.origin,
+            timeoutMs: nextModelTimeout(),
+            models,
+            onModelCalls: (count) => { modelCalls += count; },
+            onProgress
+          });
+        } catch (retryError) {
+          const retryFailure = retryError instanceof AggregateError
+            ? retryError.errors.map((reason) => reason instanceof Error ? reason.message : String(reason)).join(' | ')
+            : retryError instanceof Error ? retryError.message : String(retryError);
+          onProgress({ phase: 'repairing', completed: 0, total: 1 });
+          generationResult = await runValidatedGeneration({
+            messages: buildVerificationMessages(
+              request,
+              chunks,
+              { title: 'Replacement quiz', questions: [] },
+              `The generated draft failed validation twice in a row: ${draftFailure} | ${retryFailure}`,
+              generationQuestionCount(request)
+            ),
+            temperature: VERIFICATION_TEMPERATURE,
+            phase: 'repair'
+          });
+        }
       }
       let { quiz, model: responseModel } = generationResult;
       onProgress({ phase: 'validating', completed: 0, total: 1 });
