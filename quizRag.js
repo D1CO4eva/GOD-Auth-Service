@@ -8,6 +8,7 @@ const GENERATION_TEMPERATURE = 0.6;
 const VERIFICATION_TEMPERATURE = 0.15;
 const GROUNDING_VALIDATION_TEMPERATURE = 0;
 const DEFAULT_GROUNDING_CONFIDENCE_THRESHOLD = 0.9;
+const MAX_QUESTION_COUNT = 35;
 const MAX_AVOID_QUESTIONS = 60;
 const HISTORY_DUPLICATE_THRESHOLD = 0.62;
 const WITHIN_QUIZ_DUPLICATE_THRESHOLD = 0.85;
@@ -192,7 +193,7 @@ export const coerceQuizRequest = (body, knowledgeBase) => {
     10,
     'question_count',
     1,
-    20
+    MAX_QUESTION_COUNT
   );
   const topK = coerceInteger(body.top_k, 8, 'top_k', 3, 12);
   const difficulty = normalizeText(body.difficulty || 'mixed').toLocaleLowerCase('en-US');
@@ -472,7 +473,7 @@ const formatContext = (chunks) => {
 };
 
 const generationQuestionCount = (request) => request.avoid_questions.length
-  ? Math.min(20, request.question_count + 4)
+  ? Math.min(MAX_QUESTION_COUNT, request.question_count + 4)
   : request.question_count;
 
 const buildSourceGroupQuestionPlan = (request, chunks, questionCount = request.question_count) => {
@@ -1087,8 +1088,8 @@ export const createQuizRouter = ({
     .map((model) => normalizeText(model))
     .filter(Boolean),
   fetchImpl = globalThis.fetch,
-  modelCallTimeoutMs = 38_000,
-  requestBudgetMs = 40_000,
+  modelCallTimeoutMs = 55_000,
+  requestBudgetMs = 90_000,
   confidenceThreshold = coerceConfidenceThreshold(process.env.QUIZ_VALIDATION_MIN_CONFIDENCE)
 }) => {
   const router = express.Router();
@@ -1124,7 +1125,7 @@ export const createQuizRouter = ({
           apiKey,
           model,
           messages: buildGroundingValidationMessages(request, quiz, chunks),
-          maxTokens: Math.min(3200, Math.max(900, quiz.questions.length * 150)),
+          maxTokens: Math.min(6000, Math.max(900, quiz.questions.length * 150)),
           origin,
           fetchImpl,
           temperature: GROUNDING_VALIDATION_TEMPERATURE,
@@ -1313,7 +1314,7 @@ export const createQuizRouter = ({
               apiKey,
               model,
               messages,
-              maxTokens: Math.min(6000, Math.max(1600, generationQuestionCount(request) * 240)),
+              maxTokens: Math.min(10000, Math.max(1600, generationQuestionCount(request) * 240)),
               origin: req.headers.origin,
               fetchImpl,
               temperature,
