@@ -149,6 +149,8 @@ To validate an existing generation response directly, send its `request` and `qu
 
 The backend also validates question count, type, choices/answer agreement, source-group coverage, citations, and exact/semantic uniqueness within the quiz and against `avoid_questions`. Generation has a 90-second total request budget shared by generation and validation. When `QUIZ_OPENROUTER_FALLBACK_MODELS` is configured, the primary and fallback models run as hedged attempts; slower attempts are cancelled after the first structurally valid result.
 
+Draft generation asks the model for each question independently — one OpenRouter call per question (plus buffer candidates when `avoid_questions` is set), up to `QUESTION_GENERATION_CONCURRENCY` (6) in flight at a time — rather than one large call for the whole quiz. This keeps each call's output small and bounded regardless of `question_count`, so large quizzes (up to 35 questions) don't risk truncated JSON or a single oversized call stalling past the request budget. Within each question slot, the primary and fallback models still race as hedged attempts, matching the rest of the pipeline. The subsequent editor/repair pass and grounding validation still operate on the whole assembled quiz, since those calls stay well within the token and time budget even at the maximum question count.
+
 ## Rebuild the knowledge base
 
 Install the ingestion-only Python dependencies in an isolated environment:
