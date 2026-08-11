@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "built_at": "2026-08-11T05:18:20.020358Z",
+  "generator": "scripts/buildQuizKnowledgeBase.py",
+  "converter": "microsoft/markitdown@0.1.7",
+  "statistics": {
+    "documents": 13,
+    "chunks": 62,
+    "terms": 2342,
+    "average_chunk_terms": 145.11
+  },
+  "sources": [
+    {
+      "id": "english-sbm-course-slokas-songs-4d1d3caa",
+      "title": "English SBM Course Slokas & Songs",
+      "source_file": "English SBM Course Slokas & Songs.pdf",
+      "source_sha256": "4d1d3caa8ffe675a3bc4dbbdf4a36c0d6a0f0116b0290b88bf5bd01cd1c30da1",
+      "markdown_file": "documents/english-sbm-course-slokas-songs-4d1d3caa.md",
+      "character_count": 4170,
+      "chunk_count": 2
+    },
+    {
+      "id": "photo-2026-08-05-01-29-00-0fc8f762",
+      "title": "PHOTO-2026-08-05-01-29-00",
+      "source_file": "PHOTO-2026-08-05-01-29-00.jpg",
+      "source_sha256": "0fc8f7622c048e2d7b18ebea0be4840dce1dcc2e5fdfb9eb136a65917fe023f8",
+      "markdown_file": "documents/photo-2026-08-05-01-29-00-0fc8f762.md",
+      "character_count": 3500,
+      "chunk_count": 5
+    },
+    {
+      "id": "sb-week1-infographics-9f2d92d0",
+      "title": "SB Week1-Infographics",
+      "source_file": "SB Week1-Infographics.jpg",
+      "source_sha256": "9f2d92d0b52a603ac4937f17dfe66e8c9ba0d4ad587cded74f0c33e3611214f6",
+      "markdown_file": "documents/sb-week1-infographics-9f2d92d0.md",
+      "character_count": 2081,
+      "chunk_count": 5
+    },
+    {
+      "id": "sb-week2-infographics-e16c32c1",
+      "title": "SB Week2-Infographics",
+      "source_file": "SB Week2-Infographics.jpg",
+      "source_sha256": "e16c32c1ece0431c178feec26aebce8440749270666b8260883af5243314c879",
+      "markdown_file": "documents/sb-week2-infographics-e16c32c1.md",
+      "character_count": 2258,
+      "chunk_count": 3
+    },
+    {
+      "id": "sb-week3-infographics-21fb0437",
+      "title": "SB Week3-Infographics",
+      "source_file": "SB Week3-Infographics.jpg",
+      "source_sha256": "21fb04371a9bb9d20056bf8f67c7a8bdd5e80f28bdaac795cf3e89181c2e337a",
+      "markdown_file": "documents/sb-week3-infographics-21fb0437.md",
+      "character_count": 2400,
+      "chunk_count": 5
+    },
+    {
+      "id": "sb-week4-infographics-6e7399a7",
+      "title": "SB Week4-Infographics",
+      "source_file": "SB Week4-Infographics.jpeg",
+      "source_sha256": "6e7399a7180042c9c5b30d8d871fad3812adb767ccdcb118d1ff4607426e6b60",
+      "markdown_file": "documents/sb-week4-infographics-6e7399a7.md",
+      "character_count": 3013,
+      "chunk_count": 7
+    },
+    {
+      "id": "sb-week5-infographics-9579d114",
+      "title": "SB Week5-Infographics",
+      "source_file": "SB Week5-Infographics.jpeg",
+      "source_sha256": "9579d1144151259d65077cd0a20e062f11d62d7bdf7d03dd2445b56279076bbf",
+      "markdown_file": "documents/sb-week5-infographics-9579d114.md",
+      "character_count": 3485,
+      "chunk_count": 4
+    },
+    {
+      "id": "sbcc-e-2-notes-pdf-db29337f",
+      "title": "SBCC E 2 Notes PDF",
+      "source_file": "SBCC E 2 Notes PDF.pdf",
+      "source_sha256": "db29337fedc03f04f36f9dbee00dba45cfccbf529fd734207c81fc10c710b135",
+      "markdown_file": "documents/sbcc-e-2-notes-pdf-db29337f.md",
+      "character_count": 9092,
+      "chunk_count": 4
+    },
+    {
+      "id": "sbcc-e-5-notes-pdf-899b7567",
+      "title": "SBCC E 5 Notes PDF",
+      "source_file": "SBCC E 5 Notes PDF.pdf",
+      "source_sha256": "899b7567d24b9e424ea74a21682bde584e52ebe8557513141e6b330dfe5c8c28",
+      "markdown_file": "documents/sbcc-e-5-notes-pdf-899b7567.md",
+      "character_count": 10403,
+      "chunk_count": 5
+    },
+    {
+      "id": "sbcc-e-6-notes-pdf-5484b88a",
+      "title": "SBCC E 6 Notes PDF",
+      "source_file": "SBCC E 6 Notes PDF.pdf",
+      "source_sha256": "5484b88a7b0d32e19372fc35c010986ea97fc0f63e9fd917c0aa55f4f1d5aa8c",
+      "markdown_file": "documents/sbcc-e-6-notes-pdf-5484b88a.md",
+      "character_count": 6575,
+      "chunk_count": 4
+    },
+    {
+      "id": "week-1-eng-sb-course-aa139a51",
+      "title": "Week 1-ENG-SB Course",
+      "source_file": "Week 1-ENG-SB Course.pdf",
+      "source_sha256": "aa139a51d2c5ad6495f8336f3cf8d58a6be85285e7192233ec891eb56d5902b8",
+      "markdown_file": "documents/week-1-eng-sb-course-aa139a51.md",
+      "character_count": 9566,
+      "chunk_count": 5
+    },
+    {
+      "id": "week-3-eng-sb-course-2-with-3-stories-6f906055",
+      "title": "Week 3-ENG-SB Course 2 - With 3 Stories",
+      "source_file": "Week 3-ENG-SB Course 2 - With 3 Stories.pdf",
+      "source_sha256": "6f90605521b28ca7421eadff36dc6805c28b85a28fc43d86d1d554f3d7bebe03",
+      "markdown_file": "documents/week-3-eng-sb-course-2-with-3-stories-6f906055.md",
+      "character_count": 21551,
+      "chunk_count": 11
+    },
+    {
+      "id": "week-4-eng-sb-course-2-pdf-f031520f",
+      "title": "Week 4-ENG-SB Course 2 PDF",
+      "source_file": "Week 4-ENG-SB Course 2 PDF.pdf",
+      "source_sha256": "f031520f6e7cdba87b188aab45e2e08561fc753450cc4618f9ab566daaf72b48",
+      "markdown_file": "documents/week-4-eng-sb-course-2-pdf-f031520f.md",
+      "character_count": 4236,
+      "chunk_count": 2
+    }
+  ]
+}
