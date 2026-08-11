@@ -14,6 +14,7 @@ const QUESTION_GENERATION_CONCURRENCY = 6;
 const SINGLE_QUESTION_MAX_TOKENS = 1200;
 const HISTORY_DUPLICATE_THRESHOLD = 0.62;
 const WITHIN_QUIZ_DUPLICATE_THRESHOLD = 0.85;
+const MIN_CONTAINMENT_TOKEN_COUNT = 5;
 const DOMAIN_BOILERPLATE_TOKENS = new Set(['srimad', 'bhagavatam', 'bhagavatham']);
 const ALLOWED_DIFFICULTIES = new Set(['beginner', 'intermediate', 'advanced', 'mixed']);
 const ALLOWED_QUESTION_TYPES = new Set(['multiple_choice', 'true_false', 'short_answer']);
@@ -62,7 +63,13 @@ export const questionSimilarity = (left, right) => {
     if (rightTokens.has(token)) intersection += 1;
   }
   const jaccard = intersection / new Set([...leftTokens, ...rightTokens]).size;
-  const containment = intersection / Math.min(leftTokens.size, rightTokens.size);
+  const smallerSize = Math.min(leftTokens.size, rightTokens.size);
+  // Containment (intersection / smaller set) is meant to catch a short question whose
+  // content is wholly subsumed by a longer, differently-worded one. For short questions
+  // on a narrow topic, a handful of shared subject words can hit 1.0 containment even
+  // though the questions test different facts, so only trust it once the smaller side
+  // has enough content words for that overlap to be meaningful.
+  const containment = smallerSize >= MIN_CONTAINMENT_TOKEN_COUNT ? intersection / smallerSize : 0;
   return Math.max(jaccard, containment);
 };
 
@@ -1003,6 +1010,9 @@ const selectBestQuizCandidates = (payload, request, chunks) => {
   const freshCandidates = [];
   const semanticFallbackCandidates = [];
   const acceptedQuestions = [];
+  let invalidCount = 0;
+  let historyExactCount = 0;
+  let withinQuizDuplicateCount = 0;
   for (const rawQuestion of payload.questions) {
     try {
       const candidateRequest = {
@@ -1016,6 +1026,7 @@ const selectBestQuizCandidates = (payload, request, chunks) => {
       if (request.avoid_questions.some((previousQuestion) => (
         normalizeQuestionKey(candidate.question) === normalizeQuestionKey(previousQuestion)
       ))) {
+        historyExactCount += 1;
         continue;
       }
       if (!isSemanticDuplicate(
@@ -1029,8 +1040,11 @@ const selectBestQuizCandidates = (payload, request, chunks) => {
         } else {
           freshCandidates.push(candidate);
         }
+      } else {
+        withinQuizDuplicateCount += 1;
       }
     } catch {
+      invalidCount += 1;
       // Invalid, repeated, or unsupported candidates are omitted from the final selection.
     }
   }
@@ -1058,7 +1072,10 @@ const selectBestQuizCandidates = (payload, request, chunks) => {
   }
   if (selected.length < request.question_count) {
     throw new Error(
-      `Only ${selected.length} of ${request.question_count} requested questions remained after candidate uniqueness and grounding checks.`
+      `Only ${selected.length} of ${request.question_count} requested questions remained after candidate ` +
+      `uniqueness and grounding checks (${payload.questions.length} raw candidates: ` +
+      `${invalidCount} invalid/unsupported, ${withinQuizDuplicateCount} within-quiz duplicates, ` +
+      `${historyExactCount} exact history repeats).`
     );
   }
 
