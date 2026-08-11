@@ -1265,10 +1265,13 @@ export const createQuizRouter = ({
     origin,
     timeoutMs,
     models,
-    onModelCalls = () => {}
+    onModelCalls = () => {},
+    onProgress = () => {}
   }) => {
     const candidateCount = generationQuestionCount(request);
     const indices = Array.from({ length: candidateCount }, (_, index) => index);
+    let completedSlots = 0;
+    onProgress({ phase: 'draft', completed: 0, total: candidateCount });
     const results = await mapWithConcurrency(indices, QUESTION_GENERATION_CONCURRENCY, async (index) => {
       const controllers = models.map(() => new AbortController());
       const attempts = models.map(async (model, modelIndex) => {
@@ -1303,13 +1306,17 @@ export const createQuizRouter = ({
           throw error;
         }
       });
+      let outcome = null;
       try {
-        return await Promise.any(attempts);
+        outcome = await Promise.any(attempts);
       } catch {
-        return null;
+        outcome = null;
       } finally {
         controllers.forEach((controller) => controller.abort());
       }
+      completedSlots += 1;
+      onProgress({ phase: 'draft', completed: completedSlots, total: candidateCount });
+      return outcome;
     });
     const surviving = results.filter(Boolean);
     const quiz = selectBestQuizCandidates(
@@ -1349,6 +1356,7 @@ export const createQuizRouter = ({
         iterative_question_generation: true,
         question_generation_concurrency: QUESTION_GENERATION_CONCURRENCY,
         max_question_count: MAX_QUESTION_COUNT,
+        streaming_generation_endpoint: '/api/quiz/generate/stream',
         hedged_model_fallback: getFallbackModels().length > 0,
         hedged_validation_fallback: getValidationFallbackModels().length > 0,
         request_budget_ms: requestBudgetMs,
@@ -1438,23 +1446,49 @@ export const createQuizRouter = ({
     }
   });
 
-  router.post(['/api/quiz/generate', '/api/generate-quiz', '/generate-quiz'], async (req, res) => {
+  const requestLimitSeconds = Math.ceil(requestBudgetMs / 1000);
+
+  const errorResponseBody = (error) => {
+    if (Number.isInteger(error?.status)) {
+      return {
+        status: error.status,
+        body: {
+          ok: false,
+          error: error.message,
+          code: error.code || 'invalid_request',
+          ...(error.validation ? { validation: error.validation } : {})
+        }
+      };
+    }
+    if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+      return {
+        status: 504,
+        body: {
+          ok: false,
+          error: `Quiz generation exceeded the ${requestLimitSeconds}-second response limit.`,
+          code: 'generation_timeout'
+        }
+      };
+    }
+    console.error('Quiz generation error:', error);
+    return {
+      status: 502,
+      body: {
+        ok: false,
+        error: 'Failed to generate a valid grounded quiz.',
+        detail: error instanceof Error ? error.message : String(error)
+      }
+    };
+  };
+
+  const buildQuizResponsePayload = async ({ req, apiKey, onProgress = () => {} }) => {
     const requestStartedAt = Date.now();
     const requestDeadline = requestStartedAt + requestBudgetMs;
-    const requestLimitSeconds = Math.ceil(requestBudgetMs / 1000);
-    if (loadError || !knowledgeBase) {
-      return res.status(503).json({ ok: false, error: 'Quiz knowledge base is unavailable.' });
+    const request = coerceQuizRequest(req.body, knowledgeBase);
+    const chunks = retrieveQuizContext(knowledgeBase, request);
+    if (!chunks.length) {
+      throw createHttpError(422, 'No course-note context matched this request.', 'no_context');
     }
-    const apiKey = normalizeText(getApiKey());
-    if (!apiKey) {
-      return res.status(500).json({ ok: false, error: 'Server is missing OPENROUTER_API_KEY.' });
-    }
-    try {
-      const request = coerceQuizRequest(req.body, knowledgeBase);
-      const chunks = retrieveQuizContext(knowledgeBase, request);
-      if (!chunks.length) {
-        throw createHttpError(422, 'No course-note context matched this request.', 'no_context');
-      }
       let modelCalls = 0;
       let repaired = false;
       let groundingRepaired = false;
@@ -1514,13 +1548,15 @@ export const createQuizRouter = ({
           origin: req.headers.origin,
           timeoutMs: nextModelTimeout(),
           models,
-          onModelCalls: (count) => { modelCalls += count; }
+          onModelCalls: (count) => { modelCalls += count; },
+          onProgress
         });
       } catch (error) {
         const draftFailure = error instanceof AggregateError
           ? error.errors.map((reason) => reason instanceof Error ? reason.message : String(reason)).join(' | ')
           : error instanceof Error ? error.message : String(error);
         repaired = true;
+        onProgress({ phase: 'repairing', completed: 0, total: 1 });
         generationResult = await runValidatedGeneration({
           messages: buildVerificationMessages(
             request,
@@ -1534,6 +1570,7 @@ export const createQuizRouter = ({
         });
       }
       let { quiz, model: responseModel } = generationResult;
+      onProgress({ phase: 'validating', completed: 0, total: 1 });
       let groundingValidation = await runGroundingValidation({
         apiKey,
         request,
@@ -1547,6 +1584,7 @@ export const createQuizRouter = ({
       if (!groundingValidation.passed) {
         repaired = true;
         groundingRepaired = true;
+        onProgress({ phase: 'repairing', completed: 0, total: 1 });
         generationResult = await runValidatedGeneration({
           messages: buildVerificationMessages(
             request,
@@ -1559,6 +1597,7 @@ export const createQuizRouter = ({
           phase: 'grounding-repair'
         });
         ({ quiz, model: responseModel } = generationResult);
+        onProgress({ phase: 'validating', completed: 0, total: 1 });
         groundingValidation = await runGroundingValidation({
           apiKey,
           request,
@@ -1596,7 +1635,7 @@ export const createQuizRouter = ({
         ...(request.include_explanations ? {} : { explanation: undefined }),
         sources: question.source_chunk_ids.map((chunkId) => sourceCitation(chunkById.get(chunkId)))
       }));
-      return res.status(200).json({
+      return {
         ok: true,
         generated_at: new Date().toISOString(),
         model: responseModel,
@@ -1645,29 +1684,60 @@ export const createQuizRouter = ({
           endpoint: '/sb-validate'
         },
         quiz
-      });
+      };
+  };
+
+  router.post(['/api/quiz/generate', '/api/generate-quiz', '/generate-quiz'], async (req, res) => {
+    if (loadError || !knowledgeBase) {
+      return res.status(503).json({ ok: false, error: 'Quiz knowledge base is unavailable.' });
+    }
+    const apiKey = normalizeText(getApiKey());
+    if (!apiKey) {
+      return res.status(500).json({ ok: false, error: 'Server is missing OPENROUTER_API_KEY.' });
+    }
+    try {
+      const payload = await buildQuizResponsePayload({ req, apiKey });
+      return res.status(200).json(payload);
     } catch (error) {
-      if (Number.isInteger(error?.status)) {
-        return res.status(error.status).json({
-          ok: false,
-          error: error.message,
-          code: error.code || 'invalid_request',
-          ...(error.validation ? { validation: error.validation } : {})
-        });
-      }
-      if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
-        return res.status(504).json({
-          ok: false,
-          error: `Quiz generation exceeded the ${requestLimitSeconds}-second response limit.`,
-          code: 'generation_timeout'
-        });
-      }
-      console.error('Quiz generation error:', error);
-      return res.status(502).json({
-        ok: false,
-        error: 'Failed to generate a valid grounded quiz.',
-        detail: error instanceof Error ? error.message : String(error)
+      const { status, body } = errorResponseBody(error);
+      return res.status(status).json(body);
+    }
+  });
+
+  router.post(['/api/quiz/generate/stream', '/api/quiz/generate-stream'], async (req, res) => {
+    if (loadError || !knowledgeBase) {
+      return res.status(503).json({ ok: false, error: 'Quiz knowledge base is unavailable.' });
+    }
+    const apiKey = normalizeText(getApiKey());
+    if (!apiKey) {
+      return res.status(500).json({ ok: false, error: 'Server is missing OPENROUTER_API_KEY.' });
+    }
+    let closed = false;
+    res.on('close', () => { closed = true; });
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no'
+    });
+    const writeEvent = (event, data) => {
+      if (closed) return;
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+    const heartbeat = setInterval(() => { if (!closed) res.write(':heartbeat\n\n'); }, 15_000);
+    try {
+      const payload = await buildQuizResponsePayload({
+        req,
+        apiKey,
+        onProgress: (progress) => writeEvent('progress', progress)
       });
+      writeEvent('complete', payload);
+    } catch (error) {
+      const { status, body } = errorResponseBody(error);
+      writeEvent('error', { status, ...body });
+    } finally {
+      clearInterval(heartbeat);
+      if (!closed) res.end();
     }
   });
 

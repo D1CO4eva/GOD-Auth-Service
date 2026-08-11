@@ -7,6 +7,7 @@ The quiz API retrieves relevant passages from the converted course-note knowledg
 - `GET /api/quiz/health` returns model configuration, source metadata, and index counts without calling the LLM.
 - `POST /api/quiz/generate` generates a quiz.
 - `POST /api/generate-quiz` and `POST /generate-quiz` are aliases.
+- `POST /api/quiz/generate/stream` (alias `POST /api/quiz/generate-stream`) generates a quiz with real per-question progress reported over Server-Sent Events, using the same request body as `/api/quiz/generate`.
 - `POST /sb-validate` independently evaluates a submitted quiz against its cited course-note chunks. `POST /api/quiz/sb-validate` is an alias.
 
 ## Request
@@ -150,6 +151,20 @@ To validate an existing generation response directly, send its `request` and `qu
 The backend also validates question count, type, choices/answer agreement, source-group coverage, citations, and exact/semantic uniqueness within the quiz and against `avoid_questions`. Generation has a 90-second total request budget shared by generation and validation. When `QUIZ_OPENROUTER_FALLBACK_MODELS` is configured, the primary and fallback models run as hedged attempts; slower attempts are cancelled after the first structurally valid result.
 
 Draft generation asks the model for each question independently — one OpenRouter call per question (plus buffer candidates when `avoid_questions` is set), up to `QUESTION_GENERATION_CONCURRENCY` (6) in flight at a time — rather than one large call for the whole quiz. This keeps each call's output small and bounded regardless of `question_count`, so large quizzes (up to 35 questions) don't risk truncated JSON or a single oversized call stalling past the request budget. Within each question slot, the primary and fallback models still race as hedged attempts, matching the rest of the pipeline. The subsequent editor/repair pass and grounding validation still operate on the whole assembled quiz, since those calls stay well within the token and time budget even at the maximum question count.
+
+## Streaming generation (Server-Sent Events)
+
+`POST /api/quiz/generate/stream` accepts the same request body as `/api/quiz/generate` and streams `text/event-stream` output instead of returning one JSON response at the end. Use this when a client wants to show real per-question progress instead of a single indefinite spinner.
+
+The connection is held open for the full duration of generation (this is intentional: the underlying pipeline makes many small per-question calls rather than one large call, and keeping a single request in flight the whole time avoids relying on a second request landing on the same backend instance to check status). A `:heartbeat` comment line is written every 15 seconds to keep intermediate proxies from timing out the connection.
+
+Events:
+
+- `progress` — `{"phase":"draft"|"validating"|"repairing","completed":number,"total":number}`. `draft` events fire once per question slot as it finishes (success or failure), so `completed`/`total` reflect real per-question progress, not an estimate. `validating` and `repairing` are single coarse-grained phase markers (`completed`/`total` are not meaningful for these two phases beyond signaling the phase changed).
+- `complete` — the identical payload `/api/quiz/generate` returns on success (`{ ok: true, quiz, verification, validation, request, retrieval, model }`).
+- `error` — `{"status": number, "ok": false, "error": string, "code": string, ...}`, matching the same error shape and status codes `/api/quiz/generate` would have returned.
+
+Exactly one of `complete` or `error` is sent, always as the last event, after which the connection closes.
 
 ## Rebuild the knowledge base
 
