@@ -5,6 +5,7 @@ const DEFAULT_REMOTE_VERSES_URL =
   'https://atlanta.godivinity.org/srimad-bhagavatham-search/data/verses.json';
 const DEFAULT_OPENROUTER_MODEL = 'openai/gpt-4o-mini';
 const DEFAULT_ANSWER_TIMEOUT_MS = 15000;
+const SEMANTIC_CONFIDENCE_THRESHOLD = 0.45;
 const MAX_MULTI_REFERENCE_CANDIDATES = 256;
 const MAX_MULTI_REFERENCE_HITS = 96;
 const LOCAL_VERSES_CACHE_URL = new URL('./sbm_context_search_cache/remote_verses.json', import.meta.url);
@@ -2413,7 +2414,7 @@ class LightweightCorpus {
       }
     }
 
-    const SEMANTIC_WEIGHT = 4.5;
+    const SEMANTIC_WEIGHT = 7;
     const queryFeatures = buildQueryFeatures(query);
     const finalHits = [];
     for (const [chunkUid, hit] of aggregated.entries()) {
@@ -2868,28 +2869,44 @@ class SbmContextSearchService {
       !multiReferencePreset &&
       !exactSearchGuideEntry
     ) {
-      const displayNames = orderedConceptMatches.map(({ concept }) => concept.display_name).join(', ');
-      const subjectNames = mentionedConceptSubjects.join(', ');
-      const answer =
-        `I recognized ${displayNames} and the named subject ${subjectNames}, but the concept index has no verified verse-level evidence tying them together. ` +
-        'I will not substitute a verse about a different person.';
-      return {
-        query,
-        ...conceptMetadata,
-        rewritten_query: queryPlan.standalone_query,
-        query_variants: uniqueList([...queryPlan.lexical_queries, ...conceptLexicalQueries]),
-        answer_mode: 'concept_evidence_inconclusive',
-        answer,
-        display_mode: 'single_reference',
-        summary: answer,
-        summary_position: 'before_hits',
-        primary_reference: null,
-        occurrences: [],
-        context_summary: answer,
-        hit_count: 0,
-        hits: [],
-        context_groups: []
-      };
+      // A recognized-but-unlinked concept match used to refuse outright here. That's right for
+      // ambiguous citation questions, but it also pre-empted genuinely answerable open-ended
+      // questions (e.g. a paraphrase of Gajendra's crisis) before semantic search ever ran.
+      // Only refuse if semantic search also has no confident candidate.
+      let hasConfidentSemanticMatch = false;
+      try {
+        const semanticPreview = await semanticSearch(queryPlan.standalone_query, { topK: 1 });
+        hasConfidentSemanticMatch = Boolean(
+          semanticPreview[0] && semanticPreview[0].score >= SEMANTIC_CONFIDENCE_THRESHOLD
+        );
+      } catch (error) {
+        console.error('Semantic confidence check failed:', error);
+      }
+
+      if (!hasConfidentSemanticMatch) {
+        const displayNames = orderedConceptMatches.map(({ concept }) => concept.display_name).join(', ');
+        const subjectNames = mentionedConceptSubjects.join(', ');
+        const answer =
+          `I recognized ${displayNames} and the named subject ${subjectNames}, but the concept index has no verified verse-level evidence tying them together. ` +
+          'I will not substitute a verse about a different person.';
+        return {
+          query,
+          ...conceptMetadata,
+          rewritten_query: queryPlan.standalone_query,
+          query_variants: uniqueList([...queryPlan.lexical_queries, ...conceptLexicalQueries]),
+          answer_mode: 'concept_evidence_inconclusive',
+          answer,
+          display_mode: 'single_reference',
+          summary: answer,
+          summary_position: 'before_hits',
+          primary_reference: null,
+          occurrences: [],
+          context_summary: answer,
+          hit_count: 0,
+          hits: [],
+          context_groups: []
+        };
+      }
     }
 
     if (searchGuideEntry && !useChapterRoute) {
