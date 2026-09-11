@@ -1,2 +1,5 @@
 /node_modules
 .env
+.venv-markitdown/
+quiz-source-documents/
+.transformers-cache/

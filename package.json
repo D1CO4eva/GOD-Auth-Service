@@ -4,10 +4,24 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "bookings:dev": "powershell -ExecutionPolicy Bypass -File ./scripts/local-dev.ps1"
+    "bookings:dev": "powershell -ExecutionPolicy Bypass -File ./scripts/local-dev.ps1",
+    "test:bookings": "node --test tests/booking-normalization.test.mjs",
+    "test:menu": "node --test tests/menu-api.test.mjs tests/menu-routes.test.mjs",
+    "test:sbm": "node --test tests/sbm-context-search.test.mjs",
+    "uat:bhagavatam": "node scripts/runBhagavatamUat.mjs",
+    "index:sbm:guide": "node scripts/buildBhagavatamSearchGuide.mjs",
+    "test:sbm:query-eval": "node --test tests/bhagavatam-query-eval.test.mjs",
+    "eval:sbm:query": "node scripts/runBhagavatamQueryEval.mjs",
+    "eval:sbm:chapter-extremes": "node scripts/runBhagavatamChapterExtremes.mjs",
+    "test:sbm:concepts": "node --test tests/bhagavatam-concept-index.test.mjs",
+    "eval:sbm:concepts": "node scripts/runBhagavatamConceptEval.mjs",
+    "ingest:quiz": "python scripts/buildQuizKnowledgeBase.py --input quiz-source-documents --output-dir quiz_rag/data --image-model openai/gpt-4o",
+    "test:quiz": "node --test tests/quiz-rag.test.mjs",
+    "eval:quiz:validation": "node scripts/runQuizValidationEval.mjs"
   },
   "dependencies": {
+    "@xenova/transformers": "^2.17.2",
     "express": "^4.19.0",
-    "nodemailer": "^8.0.4"
+    "nodemailer": "^9.0.3"
   }
 }
